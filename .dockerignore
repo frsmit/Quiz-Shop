@@ -1,0 +1,16 @@
+node_modules
+**/node_modules
+**/dist
+**/coverage
+.git
+.github
+extension/src
+extension/public
+extension/tests
+extension/scripts
+demo
+*.md
+*.docx
+**/.env
+**/.env.*
+!**/.env.example

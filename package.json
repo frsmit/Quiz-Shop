@@ -1,0 +1,27 @@
+{
+  "name": "ai-browser-assistant",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AI-powered browser learning assistant: a Manifest V3 extension plus a provider-agnostic Express backend.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "workspaces": [
+    "server",
+    "extension"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace server",
+    "dev:server": "npm run dev --workspace server",
+    "dev:extension": "npm run dev --workspace extension",
+    "build": "npm run build --workspace server && npm run build --workspace extension",
+    "build:server": "npm run build --workspace server",
+    "build:extension": "npm run build --workspace extension",
+    "test": "npm run test --workspace server && npm run test --workspace extension",
+    "typecheck": "npm run typecheck --workspace server && npm run typecheck --workspace extension",
+    "demo": "node scripts/serve-demo.mjs",
+    "fake-ai": "node scripts/fake-ai-endpoint.mjs"
+  }
+}

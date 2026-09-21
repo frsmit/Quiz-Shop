@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Practice Quiz — AI Browser Learning Assistant demo</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <!-- Page furniture. The detector must ignore everything in here. -->
+    <nav class="site-nav" aria-label="Primary">
+      <strong>CS Practice</strong>
+      <ul>
+        <li><a href="#">Courses</a></li>
+        <li><a href="#">Why is recursion hard to learn?</a></li>
+        <li><a href="#">Account</a></li>
+      </ul>
+    </nav>
+
+    <main class="page">
+      <header class="page-header">
+        <h1>Practice quiz</h1>
+        <p>
+          A local, self-contained page for exercising the extension's question detection. Several
+          different DOM structures are used on purpose.
+        </p>
+      </header>
+
+      <!-- 1. Classic fieldset + radio group with explicit labels. -->
+      <section class="question" id="q-complexity">
+        <h2>Question 1</h2>
+        <fieldset>
+          <legend>What is the average time complexity of binary search?</legend>
+          <div class="option">
+            <input type="radio" id="q1a" name="q1" value="a" />
+            <label for="q1a">O(n)</label>
+          </div>
+          <div class="option">
+            <input type="radio" id="q1b" name="q1" value="b" />
+            <label for="q1b">O(log n)</label>
+          </div>
+          <div class="option">
+            <input type="radio" id="q1c" name="q1" value="c" />
+            <label for="q1c">O(n log n)</label>
+          </div>
+          <div class="option">
+            <input type="radio" id="q1d" name="q1" value="d" />
+            <label for="q1d">O(1)</label>
+          </div>
+        </fieldset>
+      </section>
+
+      <!-- 2. Label-wrapped inputs, no `for` attributes, no fieldset. -->
+      <section class="question" id="q-http">
+        <h2>Question 2</h2>
+        <p class="prompt">Which HTTP status code indicates that a resource was not found?</p>
+        <div class="options">
+          <label><input type="radio" name="q2" value="a" /> 200 OK</label>
+          <label><input type="radio" name="q2" value="b" /> 301 Moved Permanently</label>
+          <label><input type="radio" name="q2" value="c" /> 404 Not Found</label>
+          <label><input type="radio" name="q2" value="d" /> 500 Internal Server Error</label>
+        </div>
+      </section>
+
+      <!-- 3. Programming question: code block plus a free-text answer. -->
+      <section class="question" id="q-output">
+        <h2>Question 3</h2>
+        <p class="prompt">What will the following JavaScript print to the console?</p>
+        <pre><code>const items = [1, 2, 3];
+const doubled = items.map((value) =&gt; value * 2);
+console.log(doubled.join('-'));</code></pre>
+        <label class="answer-label" for="q3">Your answer</label>
+        <input type="text" id="q3" name="q3" placeholder="Type the exact output" />
+      </section>
+
+      <!-- 4. Short answer with a textarea. -->
+      <section class="question" id="q-polymorphism">
+        <h2>Question 4</h2>
+        <p class="prompt">Explain polymorphism in object-oriented programming.</p>
+        <textarea id="q4" name="q4" rows="4" placeholder="Two or three sentences"></textarea>
+      </section>
+
+      <!-- 5. Dropdown rather than radios. -->
+      <section class="question" id="q-sql">
+        <h2>Question 5</h2>
+        <p class="prompt">Which SQL clause filters rows after aggregation has been applied?</p>
+        <select id="q5" name="q5">
+          <option value="">Choose an answer…</option>
+          <option value="where">WHERE</option>
+          <option value="having">HAVING</option>
+          <option value="group">GROUP BY</option>
+          <option value="order">ORDER BY</option>
+        </select>
+      </section>
+
+      <!-- 6. Mathematical question, maths written as accessible MathML. -->
+      <section class="question" id="q-derivative">
+        <h2>Question 6</h2>
+        <p class="prompt">
+          Differentiate the following with respect to x:
+          <math xmlns="http://www.w3.org/1998/Math/MathML">
+            <mrow>
+              <mi>f</mi><mo>(</mo><mi>x</mi><mo>)</mo><mo>=</mo>
+              <mn>3</mn><msup><mi>x</mi><mn>2</mn></msup>
+              <mo>+</mo><mn>5</mn><mi>x</mi><mo>−</mo><mn>7</mn>
+            </mrow>
+          </math>
+        </p>
+        <input type="text" id="q6" name="q6" placeholder="f'(x) = …" />
+      </section>
+
+      <!-- 7. Static text question: no form controls at all. -->
+      <section class="question" id="q-static">
+        <h2>Question 7</h2>
+        <p class="prompt">Which data structure gives O(1) average-case lookup by key?</p>
+        <ol class="plain-options">
+          <li>A. Linked list</li>
+          <li>B. Hash table</li>
+          <li>C. Binary search tree</li>
+          <li>D. Array</li>
+        </ol>
+      </section>
+
+      <div id="dynamic-questions"></div>
+
+      <div class="controls">
+        <button type="button" id="load-more">Load two more questions</button>
+        <button type="button" id="rerender">Re-render all questions</button>
+        <span id="controls-status" class="status" role="status"></span>
+      </div>
+
+      <p class="hint">
+        “Re-render” destroys and rebuilds every question node, the way a React re-render does. The
+        extension should recognise the questions as ones it has already seen and stay quiet.
+      </p>
+    </main>
+
+    <aside class="advert" aria-label="Advertisement">
+      <p>Advertisement</p>
+      <p>Want to learn faster? Have you tried our premium plan?</p>
+    </aside>
+
+    <footer class="site-footer">
+      <p>Demo page for local development. What is the meaning of this footer? Nothing at all.</p>
+    </footer>
+
+    <script src="quiz.js" type="module"></script>
+  </body>
+</html>

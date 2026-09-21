@@ -1,0 +1,38 @@
+# Starts the backend. Everything else in the project - the extension and the
+# demo page - runs on the host, so Docker is convenient but never required.
+#
+#   docker compose up                       backend only
+#   docker compose --profile persistence up backend + MongoDB
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    image: ai-browser-assistant-server
+    ports:
+      - '3000:3000'
+    env_file:
+      - server/.env
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: '3000'
+      # Reach the host's demo page and the unpacked extension.
+      CORS_ALLOWED_ORIGINS: 'chrome-extension://*,http://localhost:5173'
+    restart: unless-stopped
+
+  # Not used by this version. The architecture is prepared for persistence
+  # (question history, sessions, saved explanations), so the service is here
+  # behind a profile rather than in a future branch.
+  mongo:
+    image: mongo:7
+    profiles:
+      - persistence
+    ports:
+      - '27017:27017'
+    volumes:
+      - mongo-data:/data/db
+    restart: unless-stopped
+
+volumes:
+  mongo-data:
