@@ -5,10 +5,15 @@
  * Reads always merge over the defaults, which keeps older stored objects valid
  * after a new setting is introduced.
  */
-import { DEFAULT_SETTINGS, SETTINGS_STORAGE_KEY } from '../shared/constants';
-import type { ExtensionSettings, ProviderId } from '../shared/types';
+import {
+  DEFAULT_SETTINGS,
+  LOG_LIMIT_BOUNDS,
+  SETTINGS_STORAGE_KEY,
+  TIMING_BOUNDS,
+} from '../shared/constants';
+import type { ExtensionSettings, ProviderChoice } from '../shared/types';
 
-const PROVIDERS: readonly ProviderId[] = ['openai', 'gemini', 'anthropic', 'openai-compatible'];
+const PROVIDERS: readonly ProviderChoice[] = ['', 'openai', 'gemini', 'anthropic', 'openai-compatible'];
 
 export async function readSettings(): Promise<ExtensionSettings> {
   const stored = await chrome.storage.sync.get(SETTINGS_STORAGE_KEY);
@@ -32,8 +37,8 @@ export function sanitize(value: unknown): ExtensionSettings {
   >;
 
   return {
-    provider: PROVIDERS.includes(input.provider as ProviderId)
-      ? (input.provider as ProviderId)
+    provider: PROVIDERS.includes(input.provider as ProviderChoice)
+      ? (input.provider as ProviderChoice)
       : DEFAULT_SETTINGS.provider,
     model: asString(input.model, DEFAULT_SETTINGS.model).slice(0, 120),
     backendUrl: normalizeUrl(asString(input.backendUrl, DEFAULT_SETTINGS.backendUrl)),
@@ -43,6 +48,27 @@ export function sanitize(value: unknown): ExtensionSettings {
     maxContextLength: clamp(input.maxContextLength, 0, 8000, DEFAULT_SETTINGS.maxContextLength),
     requestTimeoutMs: clamp(input.requestTimeoutMs, 2000, 120_000, DEFAULT_SETTINGS.requestTimeoutMs),
     cacheEnabled: asBoolean(input.cacheEnabled, DEFAULT_SETTINGS.cacheEnabled),
+
+    startDelayMs: clamp(
+      input.startDelayMs,
+      TIMING_BOUNDS.startDelay.min,
+      TIMING_BOUNDS.startDelay.max,
+      DEFAULT_SETTINGS.startDelayMs,
+    ),
+    answerDelayMs: clamp(
+      input.answerDelayMs,
+      TIMING_BOUNDS.answerDelay.min,
+      TIMING_BOUNDS.answerDelay.max,
+      DEFAULT_SETTINGS.answerDelayMs,
+    ),
+
+    logEnabled: asBoolean(input.logEnabled, DEFAULT_SETTINGS.logEnabled),
+    logLimit: clamp(
+      input.logLimit,
+      LOG_LIMIT_BOUNDS.min,
+      LOG_LIMIT_BOUNDS.max,
+      DEFAULT_SETTINGS.logLimit,
+    ),
     enabledOrigins: asOrigins(input.enabledOrigins),
   };
 }

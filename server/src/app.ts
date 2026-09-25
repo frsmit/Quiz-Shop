@@ -36,7 +36,10 @@ export function createApp(dependencies: AppDependencies = {}): Express {
       ? new InMemoryAnswerStore({ ttlMs: env.CACHE_TTL_MS, maxEntries: env.CACHE_MAX_ENTRIES })
       : new NullAnswerStore());
 
-  const service = new QuestionService(factory, store);
+  const service = new QuestionService(factory, store, {
+    maxAttempts: env.PROVIDER_MAX_ATTEMPTS,
+    baseRetryDelayMs: env.PROVIDER_RETRY_BASE_MS,
+  });
   const app = express();
 
   // Behind a single reverse proxy in the Docker setup; needed for the rate

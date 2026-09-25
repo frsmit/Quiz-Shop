@@ -5,39 +5,73 @@
  * treated as untrusted: the service worker validates the discriminant and the
  * payload shape before acting, and never echoes backend configuration back.
  */
-import type { DetectedQuestion, ExtensionSettings, QuestionAnswer, QuestionRequest } from './types';
+import type {
+  ActivityEntry,
+  ActivityOutcome,
+  ActivityStats,
+  DetectedQuestion,
+  ExtensionSettings,
+  QuestionAnswer,
+  QuestionRequest,
+  RuntimeStatus,
+} from './types';
 
 export const MESSAGE_SOURCE = 'ai-browser-assistant' as const;
 
 export type ContentToWorkerMessage =
   | { kind: 'question:detected'; fingerprint: string; request: QuestionRequest }
+  | { kind: 'answer:applied'; fingerprint: string; outcome: ActivityOutcome }
   | { kind: 'settings:get' };
 
-export type WorkerToContentMessage = { kind: 'settings:changed'; settings: ExtensionSettings };
+export type WorkerToContentMessage =
+  | { kind: 'settings:changed'; settings: ExtensionSettings }
+  | { kind: 'run:changed'; status: RuntimeStatus };
 
-export type OptionsToWorkerMessage =
+export type UiToWorkerMessage =
   | { kind: 'settings:get' }
   | { kind: 'settings:save'; settings: ExtensionSettings }
   | { kind: 'backend:health' }
-  | { kind: 'cache:clear' };
+  | { kind: 'cache:clear' }
+  | { kind: 'run:get' }
+  | { kind: 'run:pause' }
+  | { kind: 'run:resume' }
+  | { kind: 'log:list'; limit?: number }
+  | { kind: 'log:stats' }
+  | { kind: 'log:clear' }
+  | { kind: 'site:enable'; origin: string }
+  | { kind: 'site:disable'; origin: string };
 
-export type WorkerMessage = ContentToWorkerMessage | OptionsToWorkerMessage;
+export type WorkerMessage = ContentToWorkerMessage | UiToWorkerMessage;
 
 export type WorkerResponse =
   | { ok: true; kind: 'answer'; answer: QuestionAnswer; cached: boolean }
   | { ok: true; kind: 'settings'; settings: ExtensionSettings }
   | { ok: true; kind: 'health'; providers: string[]; activeProvider: string }
+  | { ok: true; kind: 'run'; status: RuntimeStatus }
+  | { ok: true; kind: 'log'; entries: ActivityEntry[] }
+  | { ok: true; kind: 'stats'; stats: ActivityStats }
   | { ok: true; kind: 'ack' }
-  | { ok: false; error: string; code: WorkerErrorCode };
+  | { ok: false; error: string; code: WorkerErrorCode; retryAfterMs?: number };
 
 export type WorkerErrorCode =
   | 'bad_request'
   | 'disabled'
+  | 'paused'
+  | 'warming_up'
   | 'network'
   | 'timeout'
   | 'rate_limited'
   | 'provider_error'
   | 'unknown';
+
+/** Failures worth retrying on a later scan rather than giving up on. */
+export const RETRYABLE_CODES: ReadonlySet<WorkerErrorCode> = new Set([
+  'network',
+  'timeout',
+  'paused',
+  'warming_up',
+  'rate_limited',
+]);
 
 export interface Envelope<T> {
   source: typeof MESSAGE_SOURCE;

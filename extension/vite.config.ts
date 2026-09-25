@@ -17,6 +17,7 @@ export default defineConfig({
     rollupOptions: {
       input: {
         options: fileURLToPath(new URL('./options.html', import.meta.url)),
+        popup: fileURLToPath(new URL('./popup.html', import.meta.url)),
         'service-worker': fileURLToPath(new URL('./src/background/service-worker.ts', import.meta.url)),
       },
       output: {

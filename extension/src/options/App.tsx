@@ -1,71 +1,105 @@
-import { useEffect, useState } from 'react';
-import { DEFAULT_SETTINGS, PROVIDER_LABELS } from '../shared/constants';
-import { envelope } from '../shared/messages';
-import type { OptionsToWorkerMessage, WorkerResponse } from '../shared/messages';
-import type { ExtensionSettings, ProviderId } from '../shared/types';
-import { Field, Toggle } from './components/Field';
-import { OriginManager } from './components/OriginManager';
+import { useCallback, useEffect, useState } from 'react';
+import { DEFAULT_SETTINGS } from '../shared/constants';
+import type { ExtensionSettings } from '../shared/types';
+import { getSettings, saveSettings, send } from './api';
+import { MonitorTab } from './tabs/MonitorTab';
+import { SettingsTab } from './tabs/SettingsTab';
+import { SitesTab } from './tabs/SitesTab';
+import { LogsTab } from './tabs/LogsTab';
+
+type TabId = 'monitor' | 'settings' | 'sites' | 'logs';
+
+interface TabDefinition {
+  id: TabId;
+  label: string;
+  title: string;
+  subtitle: string;
+  /** Single glyph in the sidebar. Monochrome, so shape does the work. */
+  glyph: string;
+}
+
+const TABS: readonly TabDefinition[] = [
+  {
+    id: 'monitor',
+    label: 'Monitor',
+    title: 'Monitor',
+    subtitle: 'What the extension is doing right now.',
+    glyph: '◉',
+  },
+  {
+    id: 'settings',
+    label: 'Settings',
+    title: 'Settings',
+    subtitle: 'Provider, timing, behaviour and the backend it talks to.',
+    glyph: '⚙',
+  },
+  {
+    id: 'sites',
+    label: 'Sites',
+    title: 'Sites',
+    subtitle: 'Where the extension is allowed to run.',
+    glyph: '⬒',
+  },
+  {
+    id: 'logs',
+    label: 'Activity log',
+    title: 'Activity log',
+    subtitle: 'Every question, answer and failure, recorded locally.',
+    glyph: '☰',
+  },
+];
 
 type Status = { tone: 'ok' | 'error'; message: string } | null;
 
-async function send(message: OptionsToWorkerMessage): Promise<WorkerResponse> {
-  return (await chrome.runtime.sendMessage(envelope(message))) as WorkerResponse;
-}
-
 export function App() {
   const [settings, setSettings] = useState<ExtensionSettings>(DEFAULT_SETTINGS);
+  const [saved, setSaved] = useState<ExtensionSettings>(DEFAULT_SETTINGS);
+  const [tab, setTab] = useState<TabId>('monitor');
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<Status>(null);
 
   useEffect(() => {
     void (async () => {
-      const response = await send({ kind: 'settings:get' });
-      if (response.ok && response.kind === 'settings') setSettings(response.settings);
+      const current = await getSettings();
+      if (current) {
+        setSettings(current);
+        setSaved(current);
+      }
       setLoaded(true);
     })();
   }, []);
 
-  const update = <K extends keyof ExtensionSettings>(key: K, value: ExtensionSettings[K]) => {
-    setSettings((current) => ({ ...current, [key]: value }));
-    setStatus(null);
-  };
+  const update = useCallback(
+    <K extends keyof ExtensionSettings>(key: K, value: ExtensionSettings[K]) => {
+      setSettings((current) => ({ ...current, [key]: value }));
+      setStatus(null);
+    },
+    [],
+  );
+
+  const dirty = JSON.stringify(settings) !== JSON.stringify(saved);
+  const active = TABS.find((entry) => entry.id === tab) ?? TABS[0];
 
   const save = async () => {
     setBusy(true);
     try {
-      const response = await send({ kind: 'settings:save', settings });
-      if (response.ok && response.kind === 'settings') {
-        setSettings(response.settings);
+      const result = await saveSettings(settings);
+      if (result) {
+        setSettings(result);
+        setSaved(result);
         setStatus({ tone: 'ok', message: 'Settings saved.' });
-      } else if (!response.ok) {
-        setStatus({ tone: 'error', message: response.error });
+      } else {
+        setStatus({ tone: 'error', message: 'The settings could not be saved.' });
       }
     } finally {
       setBusy(false);
     }
   };
 
-  const testConnection = async () => {
-    setBusy(true);
+  const revert = () => {
+    setSettings(saved);
     setStatus(null);
-    try {
-      await send({ kind: 'settings:save', settings });
-      const response = await send({ kind: 'backend:health' });
-      if (response.ok && response.kind === 'health') {
-        const configured = response.providers.length
-          ? response.providers.join(', ')
-          : 'none configured';
-        setStatus({
-          tone: 'ok',
-          message: `Backend reachable. Active provider: ${response.activeProvider}. Credentials present for: ${configured}.`,
-        });
-      } else if (!response.ok) {
-        setStatus({ tone: 'error', message: response.error });
-      }
-    } finally {
-      setBusy(false);
-    }
   };
 
   const clearCache = async () => {
@@ -73,156 +107,94 @@ export function App() {
     setStatus({ tone: 'ok', message: 'Cached answers cleared.' });
   };
 
-  if (!loaded) return <main className="page">Loading settings…</main>;
+  if (!loaded) {
+    return (
+      <div className="boot">
+        <p className="muted">Loading…</p>
+      </div>
+    );
+  }
+
+  const editable = tab === 'settings' || tab === 'sites';
 
   return (
-    <main className="page">
-      <header className="page-header">
-        <h1>AI Browser Learning Assistant</h1>
-        <p>Detected questions are answered by your own backend. No AI interface is added to pages.</p>
-      </header>
+    <div className="shell">
+      <aside className="sidebar">
+        <div className="sidebar-brand">
+          <span className="brand-mark" aria-hidden="true">
+            ?
+          </span>
+          <span className="brand-name">
+            Browser
+            <strong>Assistant</strong>
+          </span>
+        </div>
 
-      <section className="card">
-        <h2>AI provider</h2>
-        <div className="row">
-          <Field label="Provider" htmlFor="provider">
-            <select
-              id="provider"
-              value={settings.provider}
-              onChange={(event) => update('provider', event.target.value as ProviderId)}
+        <nav className="sidebar-nav" aria-label="Sections">
+          {TABS.map((entry) => (
+            <button
+              key={entry.id}
+              type="button"
+              className={`nav-item ${tab === entry.id ? 'nav-item-on' : ''}`}
+              aria-current={tab === entry.id ? 'page' : undefined}
+              onClick={() => setTab(entry.id)}
             >
-              {Object.entries(PROVIDER_LABELS).map(([value, label]) => (
-                <option key={value} value={value}>
-                  {label}
-                </option>
-              ))}
-            </select>
-          </Field>
+              <span className="nav-glyph" aria-hidden="true">
+                {entry.glyph}
+              </span>
+              {entry.label}
+            </button>
+          ))}
+        </nav>
 
-          <Field label="Model" htmlFor="model" hint="Leave blank to use the backend default.">
-            <input
-              id="model"
-              type="text"
-              value={settings.model}
-              placeholder="backend default"
-              onChange={(event) => update('model', event.target.value)}
-            />
-          </Field>
+        <div className="sidebar-foot">
+          <p>Answers come from your own backend.</p>
+          <p className="sidebar-url">{saved.backendUrl}</p>
         </div>
+      </aside>
 
-        <p className="notice">
-          <strong>API keys live on the backend.</strong> They are never stored in the extension or
-          sent to the page. Configure them in <code>server/.env</code>.
-        </p>
-      </section>
+      <div className="main">
+        <header className="topbar">
+          <div>
+            <h1>{active!.title}</h1>
+            <p>{active!.subtitle}</p>
+          </div>
 
-      <section className="card">
-        <h2>Backend</h2>
-        <div className="row">
-          <Field label="Backend URL" htmlFor="backendUrl">
-            <input
-              id="backendUrl"
-              type="url"
-              value={settings.backendUrl}
-              onChange={(event) => update('backendUrl', event.target.value)}
-            />
-          </Field>
+          {editable ? (
+            <div className="topbar-actions">
+              {status ? (
+                <span className={`status ${status.tone}`}>{status.message}</span>
+              ) : dirty ? (
+                <span className="status warn">Unsaved changes</span>
+              ) : (
+                <span className="muted">All changes saved</span>
+              )}
 
-          <Field
-            label="Backend access key"
-            htmlFor="backendApiKey"
-            hint="Only needed if the backend sets API_ACCESS_KEY."
-          >
-            <input
-              id="backendApiKey"
-              type="password"
-              value={settings.backendApiKey}
-              onChange={(event) => update('backendApiKey', event.target.value)}
-            />
-          </Field>
-        </div>
+              <button type="button" className="ghost" onClick={() => void clearCache()}>
+                Clear cached answers
+              </button>
+              <button type="button" className="ghost" onClick={revert} disabled={!dirty || busy}>
+                Revert
+              </button>
+              <button
+                type="button"
+                className="primary"
+                onClick={() => void save()}
+                disabled={!dirty || busy}
+              >
+                Save changes
+              </button>
+            </div>
+          ) : null}
+        </header>
 
-        <div className="row">
-          <Field
-            label="Request timeout (ms)"
-            htmlFor="requestTimeoutMs"
-            hint="Between 2000 and 120000."
-          >
-            <input
-              id="requestTimeoutMs"
-              type="number"
-              min={2000}
-              max={120000}
-              step={500}
-              value={settings.requestTimeoutMs}
-              onChange={(event) => update('requestTimeoutMs', Number(event.target.value))}
-            />
-          </Field>
-
-          <Field
-            label="Maximum context length"
-            htmlFor="maxContextLength"
-            hint="Characters of surrounding page content sent with a question. 0 sends none."
-          >
-            <input
-              id="maxContextLength"
-              type="number"
-              min={0}
-              max={8000}
-              step={100}
-              value={settings.maxContextLength}
-              onChange={(event) => update('maxContextLength', Number(event.target.value))}
-            />
-          </Field>
-        </div>
-      </section>
-
-      <section className="card">
-        <h2>Behaviour</h2>
-        <Toggle
-          label="Detect questions automatically"
-          hint="Watches the page and answers questions as they appear."
-          checked={settings.autoDetect}
-          onChange={(value) => update('autoDetect', value)}
-        />
-        <Toggle
-          label="Fill answers into the page"
-          hint="Selects the matching option or types into the answer field using ordinary DOM events."
-          checked={settings.autoFill}
-          onChange={(value) => update('autoFill', value)}
-        />
-        <Toggle
-          label="Cache answers"
-          hint="Reuses the answer when the same question is seen again."
-          checked={settings.cacheEnabled}
-          onChange={(value) => update('cacheEnabled', value)}
-        />
-      </section>
-
-      <section className="card">
-        <h2>Sites</h2>
-        <p className="hint">
-          The extension only runs on sites you add here, plus <code>localhost</code> for the bundled
-          demo.
-        </p>
-        <OriginManager
-          origins={settings.enabledOrigins}
-          onChange={(origins) => update('enabledOrigins', origins)}
-        />
-      </section>
-
-      <div className="actions">
-        <button type="button" className="primary" onClick={() => void save()} disabled={busy}>
-          Save settings
-        </button>
-        <button type="button" onClick={() => void testConnection()} disabled={busy}>
-          Test connection
-        </button>
-        <button type="button" onClick={() => void clearCache()} disabled={busy}>
-          Clear cached answers
-        </button>
-        {status ? <span className={`status ${status.tone}`}>{status.message}</span> : null}
+        <main className="content">
+          {tab === 'monitor' ? <MonitorTab settings={saved} /> : null}
+          {tab === 'settings' ? <SettingsTab settings={settings} update={update} /> : null}
+          {tab === 'sites' ? <SitesTab settings={settings} update={update} /> : null}
+          {tab === 'logs' ? <LogsTab /> : null}
+        </main>
       </div>
-    </main>
+    </div>
   );
 }

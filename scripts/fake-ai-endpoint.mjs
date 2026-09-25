@@ -33,11 +33,19 @@ function answerFor(userPrompt) {
     };
   }
 
+  // Open questions have nothing to choose from, so echo back what arrived.
+  // Seeing your own question come back is the point: it proves the extraction
+  // and the round trip worked, and makes it obvious no model was involved.
+  const type = /Question type:\s*(\S+)/.exec(userPrompt)?.[1] ?? 'unknown';
+  const question = /<question>\n([\s\S]*?)\n<\/question>/.exec(userPrompt)?.[1] ?? '';
+  const echo = question.replace(/\s+/g, ' ').trim().slice(0, 120);
+
   return {
-    answer: 'This is a placeholder answer from the local fake endpoint.',
-    explanation: 'No real model was called. Configure a provider to get a real answer.',
-    confidence: 0.1,
-    reasoningSummary: 'Deterministic placeholder.',
+    answer: `[no model] The backend received your ${type} question: "${echo}"`,
+    explanation:
+      'This is the local fake endpoint, not an AI. It echoes the question back so you can see the round trip worked. Configure a real provider in server/.env for an actual answer.',
+    confidence: 0,
+    reasoningSummary: 'Echo only - no reasoning took place.',
   };
 }
 

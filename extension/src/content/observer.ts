@@ -26,14 +26,30 @@ export interface PageObserver {
 
 const RELEVANT_SELECTOR = 'input, select, textarea, label, form, fieldset, [data-question], .question';
 
+/**
+ * `Node.TEXT_NODE` and `Node.ELEMENT_NODE` as literals.
+ *
+ * The constructor globals (`Node`, `Element`) are not guaranteed to exist
+ * everywhere this module can be evaluated, and a `ReferenceError` thrown
+ * inside a MutationObserver callback is swallowed by the browser - the page
+ * would simply stop being watched, with nothing in the console to say why.
+ */
+const TEXT_NODE = 3;
+const ELEMENT_NODE = 1;
+
 /** Could this node have brought a question - or its answer controls - with it? */
 function isRelevantNode(node: Node): boolean {
-  if (node.nodeType === Node.TEXT_NODE) {
+  if (node.nodeType === TEXT_NODE) {
     return (node.nodeValue?.trim().length ?? 0) > 0;
   }
-  if (!(node instanceof Element)) return false;
-  if (node.matches(RELEVANT_SELECTOR)) return true;
-  return node.querySelector(RELEVANT_SELECTOR) !== null || (node.textContent?.trim().length ?? 0) > 0;
+  if (node.nodeType !== ELEMENT_NODE) return false;
+
+  const element = node as Element;
+  if (element.matches(RELEVANT_SELECTOR)) return true;
+  return (
+    element.querySelector(RELEVANT_SELECTOR) !== null ||
+    (element.textContent?.trim().length ?? 0) > 0
+  );
 }
 
 function isRelevantMutation(mutation: MutationRecord): boolean {

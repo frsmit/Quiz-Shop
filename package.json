@@ -22,6 +22,7 @@
     "test": "npm run test --workspace server && npm run test --workspace extension",
     "typecheck": "npm run typecheck --workspace server && npm run typecheck --workspace extension",
     "demo": "node scripts/serve-demo.mjs",
-    "fake-ai": "node scripts/fake-ai-endpoint.mjs"
+    "fake-ai": "node scripts/fake-ai-endpoint.mjs",
+    "test:coverage": "npm run test:coverage --workspace server && npm run test:coverage --workspace extension"
   }
 }

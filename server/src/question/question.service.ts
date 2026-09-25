@@ -9,20 +9,34 @@ import { createHash } from 'node:crypto';
 import type { AnswerStore } from '../cache/answer-cache.js';
 import type { ProviderRegistry } from '../providers/provider.factory.js';
 import type { QuestionAnswer, QuestionRequest } from './question.schema.js';
+import { withRetry } from '../providers/retry.js';
+import { getLogger } from '../config/logger.js';
 
 export interface AnswerResult {
   answer: QuestionAnswer;
   cached: boolean;
 }
 
+export interface QuestionServiceOptions {
+  /** Attempts per question, including the first. */
+  maxAttempts?: number;
+  baseRetryDelayMs?: number;
+}
+
 export class QuestionService {
   /** Identical questions arriving together share one provider call. */
   private readonly inFlight = new Map<string, Promise<QuestionAnswer>>();
+  private readonly maxAttempts: number;
+  private readonly baseRetryDelayMs: number;
 
   constructor(
     private readonly factory: ProviderRegistry,
     private readonly store: AnswerStore,
-  ) {}
+    options: QuestionServiceOptions = {},
+  ) {
+    this.maxAttempts = options.maxAttempts ?? 3;
+    this.baseRetryDelayMs = options.baseRetryDelayMs ?? 1_000;
+  }
 
   async answer(request: QuestionRequest, signal?: AbortSignal): Promise<AnswerResult> {
     const provider = this.factory.create(request.provider, request.model);
@@ -34,8 +48,18 @@ export class QuestionService {
     const pending = this.inFlight.get(key);
     if (pending) return { answer: await pending, cached: false };
 
-    const work = provider
-      .answerQuestion(request, signal)
+    const work = withRetry(() => provider.answerQuestion(request, signal), {
+      attempts: this.maxAttempts,
+      baseDelayMs: this.baseRetryDelayMs,
+      maxDelayMs: 8_000,
+      signal,
+      onRetry: (attempt, delayMs, error) => {
+        getLogger().warn(
+          { provider: provider.getName(), code: error.code, attempt, delayMs },
+          'Retrying a transient provider failure',
+        );
+      },
+    })
       .then(async (answer) => {
         await this.store.set(key, answer);
         return answer;

@@ -19,4 +19,5 @@ Thumbs.db
 extension/dist/
 server/dist/
 
-Prompt.docx
+Prompt.docxcoverage
+dist-dev/

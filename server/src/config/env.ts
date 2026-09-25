@@ -55,6 +55,12 @@ const envSchema = z.object({
 
   /** Upper bound on a single provider call. */
   PROVIDER_TIMEOUT_MS: z.coerce.number().int().positive().default(45_000),
+  /** Attempts per question, including the first. Only retryable failures
+   *  (429, 503, connection resets) are retried - free tiers return these
+   *  routinely and one of them should not become a failed answer. */
+  PROVIDER_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(5).default(3),
+  /** Delay before the second attempt; doubles, with jitter. */
+  PROVIDER_RETRY_BASE_MS: z.coerce.number().int().min(0).default(1_000),
   /** Largest JSON body accepted, as an Express body-parser size string. */
   MAX_REQUEST_BODY: z.string().default('32kb'),
 

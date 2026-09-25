@@ -7,21 +7,32 @@
  * page should look exactly as it did before the extension was installed - and
  * it never exposes the backend URL, credentials or message channel to page
  * JavaScript.
+ *
+ * It fills answers in and stops there. It never clicks Next, Submit or any
+ * other control that would commit an answer or navigate on the user's behalf.
  */
-import { REQUEST_THROTTLE_MS } from '../shared/constants';
-import { envelope, isEnvelope } from '../shared/messages';
+import { RETRYABLE_CODES, envelope, isEnvelope } from '../shared/messages';
 import type { ContentToWorkerMessage, WorkerResponse } from '../shared/messages';
-import type { DetectedQuestion, ExtensionSettings } from '../shared/types';
+import type { ActivityOutcome, DetectedQuestion, ExtensionSettings, QuestionAnswer } from '../shared/types';
 import { detectQuestions } from './detector';
 import { applyAnswer } from './interaction';
 import { createPageObserver } from './observer';
 
-/** Fingerprints already sent this page-load; prevents re-asking on re-render. */
+/** Fingerprints already sent; prevents re-asking after a re-render. */
 const processed = new Set<string>();
 
+/**
+ * Answers already received, kept for the page's lifetime.
+ *
+ * On a site that shows one question per page, going back to a question that
+ * was already answered should re-fill it without another request - the DOM is
+ * new, but the question is not.
+ */
+const answers = new Map<string, QuestionAnswer>();
+
 let settings: ExtensionSettings | null = null;
-let lastRequestAt = 0;
 let scanning = false;
+let retryTimer: ReturnType<typeof setTimeout> | null = null;
 
 async function send(message: ContentToWorkerMessage): Promise<WorkerResponse | null> {
   try {
@@ -46,7 +57,22 @@ async function loadSettings(): Promise<ExtensionSettings | null> {
   return null;
 }
 
-/** Ask the worker about one question and apply the answer if configured to. */
+/** Schedule one more scan, replacing any scan already scheduled. */
+function scheduleRetry(delayMs: number): void {
+  if (retryTimer !== null) clearTimeout(retryTimer);
+  retryTimer = setTimeout(() => {
+    retryTimer = null;
+    void scan();
+  }, Math.max(500, Math.min(delayMs, 5 * 60 * 1000)));
+}
+
+/** Put an answer into the page and tell the worker how it went. */
+function fill(question: DetectedQuestion, answer: QuestionAnswer): void {
+  if (!settings?.autoFill || !question.container.isConnected) return;
+  const outcome = applyAnswer(question.container, answer) as ActivityOutcome;
+  void send({ kind: 'answer:applied', fingerprint: question.fingerprint, outcome });
+}
+
 async function resolveQuestion(question: DetectedQuestion): Promise<void> {
   const response = await send({
     kind: 'question:detected',
@@ -55,23 +81,24 @@ async function resolveQuestion(question: DetectedQuestion): Promise<void> {
   });
 
   if (!response) {
-    // Allow a later scan to retry a question the worker never saw.
     processed.delete(question.fingerprint);
     return;
   }
 
   if (!response.ok) {
-    if (response.code === 'network' || response.code === 'timeout') {
+    if (RETRYABLE_CODES.has(response.code)) {
+      // Paused, warming up or a transient network fault: let a later scan
+      // pick the question up again rather than losing it.
       processed.delete(question.fingerprint);
+      if (typeof response.retryAfterMs === 'number') scheduleRetry(response.retryAfterMs);
     }
     return;
   }
 
   if (response.kind !== 'answer') return;
 
-  if (settings?.autoFill && question.container.isConnected) {
-    applyAnswer(question.container, response.answer);
-  }
+  answers.set(question.fingerprint, response.answer);
+  fill(question, response.answer);
 }
 
 async function scan(): Promise<void> {
@@ -88,15 +115,19 @@ async function scan(): Promise<void> {
     });
 
     for (const question of questions) {
+      const known = answers.get(question.fingerprint);
+      if (known) {
+        // Re-rendered, or the user navigated back to it. Fill it in again
+        // without asking anyone.
+        fill(question, known);
+        continue;
+      }
+
       if (processed.has(question.fingerprint)) continue;
       processed.add(question.fingerprint);
 
-      // Space requests out so a page that renders twenty questions at once
-      // cannot turn into twenty simultaneous provider calls.
-      const wait = Math.max(0, lastRequestAt + REQUEST_THROTTLE_MS - Date.now());
-      lastRequestAt = Date.now() + wait;
-      if (wait > 0) await sleep(wait);
-
+      // Pacing between answers is enforced by the service worker, so that it
+      // holds across every tab rather than per page.
       void resolveQuestion(question);
     }
   } finally {
@@ -104,20 +135,26 @@ async function scan(): Promise<void> {
   }
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 const observer = createPageObserver({ onScan: () => void scan() });
 
 chrome.runtime.onMessage.addListener((message: unknown) => {
   if (!isEnvelope(message)) return undefined;
   const payload = message.payload;
+
   if (payload.kind === 'settings:changed' && typeof payload.settings === 'object') {
     settings = payload.settings as ExtensionSettings;
+    // Keep the answers: they are still valid, and re-filling is free.
     processed.clear();
     if (settings.autoDetect) observer.schedule();
+    return undefined;
   }
+
+  if (payload.kind === 'run:changed') {
+    // Resumed, or the start delay elapsed - try anything that was skipped.
+    processed.clear();
+    observer.schedule();
+  }
+
   return undefined;
 });
 

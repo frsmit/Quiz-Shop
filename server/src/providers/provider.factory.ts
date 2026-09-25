@@ -10,7 +10,7 @@
 import type { AIProvider, ProviderContext } from './ai-provider.interface.js';
 import { ProviderError } from './provider.errors.js';
 import { AnthropicProvider } from './anthropic.provider.js';
-import { GeminiProvider } from './gemini.provider.js';
+import { GEMINI_DEFAULT_MODEL, GeminiProvider } from './gemini.provider.js';
 import { OpenAIProvider } from './openai.provider.js';
 import { OpenAICompatibleProvider } from './openai-compatible.provider.js';
 import type { Env } from '../config/env.js';
@@ -45,7 +45,7 @@ const REGISTRY: Record<ProviderId, Registration> = {
 
   gemini: {
     label: 'Google Gemini',
-    defaultModel: (env) => env.AI_MODEL ?? 'gemini-2.0-flash',
+    defaultModel: (env) => env.AI_MODEL ?? GEMINI_DEFAULT_MODEL,
     isConfigured: (env) => Boolean(env.GEMINI_API_KEY),
     requirement: 'GEMINI_API_KEY',
     build: (env, context) => new GeminiProvider(env.GEMINI_API_KEY as string, context),

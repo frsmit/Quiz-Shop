@@ -35,14 +35,19 @@ const REQUEST = {
   source: { url: 'http://localhost:5173/', title: 'Practice quiz' },
 };
 
+const EXTENSION_ID = 'abcdefghijklmnopabcdefghijklmnop';
+
 /** Messages the worker pushed out to tabs, i.e. worker → content script. */
 let sentToTabs: Array<{ tabId: number; message: unknown }> = [];
 let messageListener: Listener | undefined;
 let storage: Record<string, unknown> = {};
+let local: Record<string, unknown> = {};
 
 function fakeChrome() {
   return {
     runtime: {
+      id: EXTENSION_ID,
+      getURL: vi.fn((path: string) => `chrome-extension://${EXTENSION_ID}/${path}`),
       onInstalled: { addListener: vi.fn() },
       onStartup: { addListener: vi.fn() },
       onMessage: {
@@ -59,6 +64,22 @@ function fakeChrome() {
           return Promise.resolve();
         }),
       },
+      // Run state and the activity log are per-device, so they live here.
+      local: {
+        get: vi.fn((key: string) => Promise.resolve({ [key]: local[key] })),
+        set: vi.fn((items: Record<string, unknown>) => {
+          Object.assign(local, items);
+          return Promise.resolve();
+        }),
+        remove: vi.fn((key: string) => {
+          delete local[key];
+          return Promise.resolve();
+        }),
+      },
+    },
+    action: {
+      setBadgeText: vi.fn(() => Promise.resolve()),
+      setBadgeBackgroundColor: vi.fn(() => Promise.resolve()),
     },
     scripting: {
       getRegisteredContentScripts: vi.fn(() => Promise.resolve([])),
@@ -80,7 +101,10 @@ function fakeChrome() {
 }
 
 /** Deliver a message the way `chrome.runtime.sendMessage` would. */
-function send(payload: unknown, sender: chrome.runtime.MessageSender = {}): Promise<WorkerResponse> {
+function send(
+  payload: unknown,
+  sender: chrome.runtime.MessageSender = FROM_OPTIONS,
+): Promise<WorkerResponse> {
   return new Promise((resolve) => {
     const handled = messageListener?.(
       { source: MESSAGE_SOURCE, payload },
@@ -92,8 +116,24 @@ function send(payload: unknown, sender: chrome.runtime.MessageSender = {}): Prom
   });
 }
 
-/** A sender that looks like a content script rather than the options page. */
-const FROM_TAB: chrome.runtime.MessageSender = { tab: { id: 1 } as chrome.tabs.Tab };
+/** A content script: its origin is the host page's, not the extension's. */
+const FROM_TAB: chrome.runtime.MessageSender = {
+  id: EXTENSION_ID,
+  tab: { id: 1 } as chrome.tabs.Tab,
+  url: 'http://localhost:5173/quiz',
+  origin: 'http://localhost:5173',
+};
+
+/**
+ * The options page. It carries a `tab` too, because `open_in_tab` puts it in
+ * one - which is why the sender check has to look at the origin instead.
+ */
+const FROM_OPTIONS: chrome.runtime.MessageSender = {
+  id: EXTENSION_ID,
+  tab: { id: 9 } as chrome.tabs.Tab,
+  url: `chrome-extension://${EXTENSION_ID}/options.html`,
+  origin: `chrome-extension://${EXTENSION_ID}`,
+};
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -106,6 +146,7 @@ beforeEach(async () => {
   sentToTabs = [];
   messageListener = undefined;
   storage = {};
+  local = {};
   vi.stubGlobal('chrome', fakeChrome());
   vi.resetModules();
   await import('../src/background/service-worker');
@@ -133,12 +174,11 @@ describe('content script → service worker → backend → content script', () 
     );
 
     expect(response).toEqual({ ok: true, kind: 'answer', answer: ANSWER, cached: false });
-    expect(calls[0]?.url).toBe('http://localhost:3000/api/questions/answer');
+    expect(calls[0]?.url).toBe(`${DEFAULT_SETTINGS.backendUrl}/api/questions/answer`);
     expect(calls[0]?.body).toMatchObject({
       question: REQUEST.question,
       type: 'multiple_choice',
       options: REQUEST.options,
-      provider: DEFAULT_SETTINGS.provider,
     });
   });
 
@@ -166,7 +206,10 @@ describe('content script → service worker → backend → content script', () 
     vi.stubGlobal('fetch', fetchMock);
 
     const message = { kind: 'question:detected', fingerprint: 'abc123', request: REQUEST };
-    const both = Promise.all([send(message, FROM_TAB), send(message, { tab: { id: 2 } as chrome.tabs.Tab })]);
+    const both = Promise.all([
+      send(message, FROM_TAB),
+      send(message, { ...FROM_TAB, tab: { id: 2 } as chrome.tabs.Tab }),
+    ]);
 
     // Both messages have to reach the in-flight map before the call resolves,
     // which is the condition the coalescing is supposed to handle.
@@ -246,7 +289,7 @@ describe('the worker does not trust the content script', () => {
     expect(bodies[0]?.options).toEqual(['O(n)', 'O(log n)']);
   });
 
-  it('refuses a settings change that arrives from a tab', async () => {
+  it('refuses a settings change that arrives from a content script', async () => {
     const response = await send(
       { kind: 'settings:save', settings: { ...DEFAULT_SETTINGS, backendUrl: 'http://evil.test' } },
       FROM_TAB,
@@ -254,6 +297,16 @@ describe('the worker does not trust the content script', () => {
 
     expect(response).toMatchObject({ ok: false, code: 'bad_request' });
     expect(storage[SETTINGS_STORAGE_KEY]).toBeUndefined();
+  });
+
+  it('accepts a settings change from the options page even though it is in a tab', async () => {
+    const response = await send({
+      kind: 'settings:save',
+      settings: { ...DEFAULT_SETTINGS, autoFill: true },
+    });
+
+    expect(response).toMatchObject({ ok: true, kind: 'settings' });
+    expect(storage[SETTINGS_STORAGE_KEY]).toMatchObject({ autoFill: true });
   });
 
   it('ignores a message that is not in our envelope', () => {
@@ -372,5 +425,82 @@ describe('options page → service worker → content scripts', () => {
       activeProvider: 'openai',
       providers: ['openai', 'anthropic'],
     });
+  });
+});
+
+describe('dynamic registration never doubles up on the manifest', () => {
+  it('skips localhost, which the manifest already injects into', async () => {
+    const chromeApi = globalThis.chrome as unknown as ReturnType<typeof fakeChrome>;
+
+    await send({
+      kind: 'settings:save',
+      settings: {
+        ...DEFAULT_SETTINGS,
+        enabledOrigins: ['http://localhost:5173', 'http://127.0.0.1:8080'],
+      },
+    });
+
+    // Both are covered by `http://localhost/*` and `http://127.0.0.1/*`;
+    // registering them again would run the content script twice per page.
+    expect(chromeApi.scripting.registerContentScripts).not.toHaveBeenCalled();
+  });
+
+  it('registers only the origins the manifest does not cover', async () => {
+    const chromeApi = globalThis.chrome as unknown as ReturnType<typeof fakeChrome>;
+
+    await send({
+      kind: 'settings:save',
+      settings: {
+        ...DEFAULT_SETTINGS,
+        enabledOrigins: ['http://localhost:5173', 'https://practice.example'],
+      },
+    });
+
+    expect(chromeApi.scripting.registerContentScripts).toHaveBeenCalledWith([
+      expect.objectContaining({ matches: ['https://practice.example/*'] }),
+    ]);
+  });
+
+  it('enables no site by default', async () => {
+    const response = await send({ kind: 'settings:get' });
+    expect(response).toMatchObject({ ok: true, settings: { enabledOrigins: [] } });
+  });
+});
+
+describe('the backend keeps control of the provider by default', () => {
+  it('sends no provider or model when the user has not chosen one', async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((_url: string, init?: RequestInit) => {
+        bodies.push(JSON.parse(String(init?.body)));
+        return Promise.resolve(jsonResponse({ data: ANSWER }));
+      }),
+    );
+
+    await send({ kind: 'question:detected', fingerprint: 'abc', request: REQUEST }, FROM_TAB);
+
+    // Omitting them is what lets AI_PROVIDER / AI_MODEL on the server apply.
+    expect(bodies[0]).not.toHaveProperty('provider');
+    expect(bodies[0]).not.toHaveProperty('model');
+  });
+
+  it('sends the override once the user picks a provider', async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((_url: string, init?: RequestInit) => {
+        bodies.push(JSON.parse(String(init?.body)));
+        return Promise.resolve(jsonResponse({ data: ANSWER }));
+      }),
+    );
+
+    await send({
+      kind: 'settings:save',
+      settings: { ...DEFAULT_SETTINGS, provider: 'anthropic', model: 'claude-opus-5' },
+    });
+    await send({ kind: 'question:detected', fingerprint: 'abc', request: REQUEST }, FROM_TAB);
+
+    expect(bodies[0]).toMatchObject({ provider: 'anthropic', model: 'claude-opus-5' });
   });
 });

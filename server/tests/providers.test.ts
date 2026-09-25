@@ -7,6 +7,7 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AnthropicProvider } from '../src/providers/anthropic.provider.js';
+import { GEMINI_DEFAULT_MODEL, GeminiProvider } from '../src/providers/gemini.provider.js';
 import { OpenAIProvider } from '../src/providers/openai.provider.js';
 import { OpenAICompatibleProvider } from '../src/providers/openai-compatible.provider.js';
 import { ProviderFactory } from '../src/providers/provider.factory.js';
@@ -201,6 +202,45 @@ describe('OpenAICompatibleProvider', () => {
     expect(answer.provider).toBe('openai-compatible');
   });
 
+  it('maps an endpoint authentication failure', async () => {
+    stubFetch(() => Promise.resolve(jsonResponse({ error: { message: 'bad key' } }, 401)));
+
+    await expect(
+      new OpenAICompatibleProvider(config, { ...CONTEXT, timeoutMs: 2_000 }).answerQuestion(QUESTION),
+    ).rejects.toMatchObject({ code: 'authentication', provider: 'openai-compatible' });
+  });
+
+  it('reports an unreachable endpoint as unavailable', async () => {
+    stubFetch(() => Promise.reject(new TypeError('fetch failed')));
+
+    await expect(
+      new OpenAICompatibleProvider(config, { ...CONTEXT, timeoutMs: 2_000 }).answerQuestion(QUESTION),
+    ).rejects.toMatchObject({ code: 'unavailable' });
+  });
+
+  it('times out when the endpoint stops responding', async () => {
+    stubFetch(
+      (_input, init) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+          });
+        }),
+    );
+
+    await expect(
+      new OpenAICompatibleProvider(config, { ...CONTEXT, timeoutMs: 60 }).answerQuestion(QUESTION),
+    ).rejects.toMatchObject({ code: 'timeout' });
+  });
+
+  it('rejects a reply that contains no JSON at all', async () => {
+    stubFetch(() => Promise.resolve(jsonResponse(chatCompletion('I think it is O(log n).'))));
+
+    await expect(
+      new OpenAICompatibleProvider(config, CONTEXT).answerQuestion(QUESTION),
+    ).rejects.toMatchObject({ code: 'invalid_response' });
+  });
+
   it('copes with an endpoint that ignores JSON mode', async () => {
     stubFetch(() =>
       Promise.resolve(jsonResponse(chatCompletion('Here is the answer:\n```json\n' + ANSWER_JSON + '\n```'))),
@@ -335,5 +375,103 @@ describe('ProviderFactory', () => {
       }),
     );
     expect(complete.create('openai-compatible').getModel()).toBe('local-model');
+  });
+});
+
+describe('GeminiProvider', () => {
+  function generateContentResponse(text: string, finishReason = 'STOP'): unknown {
+    return {
+      candidates: [{ content: { parts: [{ text }], role: 'model' }, finishReason, index: 0 }],
+      usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2 },
+    };
+  }
+
+  it('returns a structured answer on success', async () => {
+    stubFetch(() => Promise.resolve(jsonResponse(generateContentResponse(ANSWER_JSON))));
+
+    const answer = await new GeminiProvider('gemini-key', CONTEXT).answerQuestion(QUESTION);
+
+    expect(answer).toMatchObject({
+      answer: 'O(log n)',
+      provider: 'gemini',
+      model: GEMINI_DEFAULT_MODEL,
+    });
+  });
+
+  it('asks for JSON output and sends the system instruction', async () => {
+    const bodies: string[] = [];
+    stubFetch((_input, init) => {
+      bodies.push(String(init?.body ?? ''));
+      return Promise.resolve(jsonResponse(generateContentResponse(ANSWER_JSON)));
+    });
+
+    await new GeminiProvider('gemini-key', CONTEXT).answerQuestion(QUESTION);
+
+    expect(bodies[0]).toContain('application/json');
+    expect(bodies[0]).toContain('study assistant');
+    expect(bodies[0]).toContain('binary search');
+    // Gemini rejects additionalProperties, so it must not be in the schema.
+    expect(bodies[0]).not.toContain('additionalProperties');
+  });
+
+  it('rejects a malformed model response', async () => {
+    stubFetch(() => Promise.resolve(jsonResponse(generateContentResponse('sorry, no JSON here'))));
+
+    await expect(
+      new GeminiProvider('gemini-key', CONTEXT).answerQuestion(QUESTION),
+    ).rejects.toMatchObject({ code: 'invalid_response', provider: 'gemini' });
+  });
+
+  it('rejects an empty response', async () => {
+    stubFetch(() => Promise.resolve(jsonResponse({ candidates: [] })));
+
+    await expect(
+      new GeminiProvider('gemini-key', CONTEXT).answerQuestion(QUESTION),
+    ).rejects.toMatchObject({ code: 'invalid_response' });
+  });
+
+  it('maps an authentication failure', async () => {
+    stubFetch(() =>
+      Promise.resolve(
+        jsonResponse({ error: { code: 401, message: 'API key not valid', status: 'UNAUTHENTICATED' } }, 401),
+      ),
+    );
+
+    await expect(
+      new GeminiProvider('gemini-key', { ...CONTEXT, timeoutMs: 2_000 }).answerQuestion(QUESTION),
+    ).rejects.toMatchObject({ code: 'authentication', provider: 'gemini' });
+  });
+
+  it('maps a rate limit to a retryable error', async () => {
+    stubFetch(() =>
+      Promise.resolve(
+        jsonResponse({ error: { code: 429, message: 'Quota exceeded', status: 'RESOURCE_EXHAUSTED' } }, 429),
+      ),
+    );
+
+    await expect(
+      new GeminiProvider('gemini-key', { ...CONTEXT, timeoutMs: 2_000 }).answerQuestion(QUESTION),
+    ).rejects.toMatchObject({ code: 'rate_limited', retryable: true });
+  });
+
+  it('times out when Gemini stops responding', async () => {
+    stubFetch(
+      (_input, init) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+          });
+        }),
+    );
+
+    await expect(
+      new GeminiProvider('gemini-key', { ...CONTEXT, timeoutMs: 60 }).answerQuestion(QUESTION),
+    ).rejects.toMatchObject({ code: 'timeout', retryable: true });
+  });
+
+  it('honours a model override', () => {
+    expect(new GeminiProvider('k', { ...CONTEXT, model: 'gemini-2.5-pro' }).getModel()).toBe(
+      'gemini-2.5-pro',
+    );
   });
 });

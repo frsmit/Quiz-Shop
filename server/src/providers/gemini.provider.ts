@@ -13,7 +13,22 @@ import { ANSWER_JSON_SCHEMA } from '../question/question.schema.js';
 import type { QuestionAnswer, QuestionRequest } from '../question/question.schema.js';
 import { SYSTEM_PROMPT, buildUserPrompt } from '../question/question.prompt.js';
 
-export const GEMINI_DEFAULT_MODEL = 'gemini-2.0-flash';
+/**
+ * A pinned Flash model rather than the `gemini-flash-latest` alias.
+ *
+ * The alias reliably serves plain requests but returns 503 for ones that
+ * carry a system instruction or a response schema - which is every request
+ * this adapter makes. Pinned models answer those fine.
+ *
+ * Newer Flash releases carry a much smaller free-tier allowance (the newest
+ * was capped at 20 requests a day when this was written), so the default is a
+ * version back from the newest - it is the one a free key can actually use.
+ *
+ * Google retires pinned versions, and when it does the 404 it returns names
+ * the replacement; that message is surfaced verbatim in the activity log.
+ * Override with AI_MODEL at any time.
+ */
+export const GEMINI_DEFAULT_MODEL = 'gemini-3.5-flash';
 
 const { additionalProperties: _ignored, ...GEMINI_SCHEMA } = ANSWER_JSON_SCHEMA;
 

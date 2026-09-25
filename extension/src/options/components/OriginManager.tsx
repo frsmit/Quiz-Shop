@@ -70,12 +70,12 @@ export function OriginManager({ origins, onChange }: OriginManagerProps) {
         </p>
       ) : (
         origins.map((origin) => (
-          <div className="origin" key={origin}>
-            <code>{origin}</code>
+          <div className="origin-row" key={origin}>
+            <code className="origin">{origin}</code>
             <span className="granted">
               {granted[origin] === false ? 'access not granted' : 'access granted'}
             </span>
-            <button type="button" onClick={() => void remove(origin)}>
+            <button type="button" className="small" onClick={() => void remove(origin)}>
               Remove
             </button>
           </div>
@@ -93,7 +93,7 @@ export function OriginManager({ origins, onChange }: OriginManagerProps) {
             if (event.key === 'Enter') void add();
           }}
         />
-        <button type="button" onClick={() => void add()}>
+        <button type="button" className="small" onClick={() => void add()}>
           Add site
         </button>
       </div>
