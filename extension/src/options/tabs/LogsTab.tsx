@@ -1,37 +1,95 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import type { ActivityEntry, ActivityOutcome } from '../../shared/types';
-import { formatTime, getLog, send } from '../api';
+import {
+  SERVER_HISTORY_OFF,
+  clearServerHistory,
+  formatTime,
+  fromServerEntry,
+  getLog,
+  getServerHistory,
+  send,
+} from '../api';
 import { OutcomeBadge } from '../components/OutcomeBadge';
+import { SourceSwitch, useHistorySource } from '../components/SourceSwitch';
 
 type Filter = 'all' | 'errors' | ActivityOutcome;
 
-const FILTERS: ReadonlyArray<{ value: Filter; label: string }> = [
-  { value: 'all', label: 'Everything' },
-  { value: 'answered', label: 'Answered' },
-  { value: 'cached', label: 'Cached' },
-  { value: 'no-match', label: 'No match' },
-  { value: 'errors', label: 'Errors' },
+const FILTERS: ReadonlyArray<{ value: Filter; label: string; server: boolean }> = [
+  { value: 'all', label: 'Everything', server: true },
+  { value: 'answered', label: 'Answered', server: true },
+  { value: 'cached', label: 'Cached', server: true },
+  // The server records answers it produced, never what happened on the page.
+  { value: 'no-match', label: 'No match', server: false },
+  { value: 'errors', label: 'Errors', server: false },
 ];
 
+/** Server history is fetched a page at a time, newest first. */
+const SERVER_PAGE_SIZE = 100;
+
 export function LogsTab() {
+  const [source, setSource] = useHistorySource();
   const [entries, setEntries] = useState<ActivityEntry[]>([]);
   const [filter, setFilter] = useState<Filter>('all');
   const [query, setQuery] = useState('');
   const [expanded, setExpanded] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [nextBefore, setNextBefore] = useState<string | undefined>();
+  const [confirmingClear, setConfirmingClear] = useState(false);
+
+  const server = source === 'server';
 
   const refresh = useCallback(async () => {
     setLoading(true);
+    setError(null);
+    setNotice(null);
+    setConfirmingClear(false);
     try {
-      setEntries(await getLog());
+      if (source === 'local') {
+        setEntries(await getLog());
+        setNextBefore(undefined);
+        return;
+      }
+      const result = await getServerHistory({ limit: SERVER_PAGE_SIZE });
+      if (!result.ok) {
+        setEntries([]);
+        setNextBefore(undefined);
+        setError(result.error);
+        return;
+      }
+      setEntries(result.value.entries.map(fromServerEntry));
+      setNextBefore(result.value.nextBefore);
+      if (!result.value.enabled) setNotice(SERVER_HISTORY_OFF);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [source]);
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    // A filter the server cannot answer would silently show nothing.
+    if (server && !FILTERS.find((option) => option.value === filter)?.server) setFilter('all');
+  }, [server, filter]);
+
+  const loadOlder = async () => {
+    if (!nextBefore) return;
+    setLoading(true);
+    try {
+      const result = await getServerHistory({ limit: SERVER_PAGE_SIZE, before: nextBefore });
+      if (!result.ok) {
+        setError(result.error);
+        return;
+      }
+      setEntries((current) => [...current, ...result.value.entries.map(fromServerEntry)]);
+      setNextBefore(result.value.nextBefore);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -48,8 +106,25 @@ export function LogsTab() {
   }, [entries, filter, query]);
 
   const clear = async () => {
-    await send({ kind: 'log:clear' });
+    if (!server) {
+      await send({ kind: 'log:clear' });
+      setEntries([]);
+      return;
+    }
+    // Server history may hold other browsers' questions too, so ask twice.
+    if (!confirmingClear) {
+      setConfirmingClear(true);
+      return;
+    }
+    setConfirmingClear(false);
+    const result = await clearServerHistory();
+    if (!result.ok) {
+      setError(result.error);
+      return;
+    }
     setEntries([]);
+    setNextBefore(undefined);
+    setNotice(`Deleted ${result.value} ${result.value === 1 ? 'entry' : 'entries'} from the server.`);
   };
 
   /** Download the log as JSON so it can be attached to a bug report. */
@@ -58,17 +133,23 @@ export function LogsTab() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `ai-browser-assistant-log-${new Date().toISOString().slice(0, 10)}.json`;
+    link.download = `ai-browser-assistant-${server ? 'server-history' : 'log'}-${new Date().toISOString().slice(0, 10)}.json`;
     link.click();
     URL.revokeObjectURL(url);
   };
+
+  const emptyMessage = server
+    ? 'The server has no history yet. It fills up as the backend answers questions.'
+    : 'The log is empty. It fills up as questions are answered.';
 
   return (
     <div className="stack">
       <section className="card">
         <div className="toolbar">
+          <SourceSwitch source={source} onChange={setSource} />
+
           <div className="chips" role="group" aria-label="Filter">
-            {FILTERS.map((option) => (
+            {FILTERS.filter((option) => !server || option.server).map((option) => (
               <button
                 key={option.value}
                 type="button"
@@ -97,8 +178,14 @@ export function LogsTab() {
             <button type="button" className="small" onClick={exportJson} disabled={!entries.length}>
               Export
             </button>
-            <button type="button" className="small danger" onClick={() => void clear()} disabled={!entries.length}>
-              Clear
+            <button
+              type="button"
+              className="small danger"
+              onClick={() => void clear()}
+              onBlur={() => setConfirmingClear(false)}
+              disabled={!entries.length}
+            >
+              {confirmingClear ? 'Delete from server?' : 'Clear'}
             </button>
           </div>
         </div>
@@ -106,17 +193,17 @@ export function LogsTab() {
         <p className="muted count-line">
           {loading
             ? 'Loading…'
-            : `${visible.length} of ${entries.length} ${entries.length === 1 ? 'entry' : 'entries'}`}
+            : `${visible.length} of ${entries.length}${nextBefore ? '+' : ''} ${
+                entries.length === 1 ? 'entry' : 'entries'
+              }${server ? ' on the server' : ' in this browser'}`}
         </p>
+        {error ? <p className="status error">{error}</p> : null}
+        {notice ? <p className="notice">{notice}</p> : null}
       </section>
 
-      {!loading && visible.length === 0 ? (
+      {!loading && !error && visible.length === 0 ? (
         <section className="card">
-          <p className="muted">
-            {entries.length === 0
-              ? 'The log is empty. It fills up as questions are answered.'
-              : 'Nothing matches that filter.'}
-          </p>
+          <p className="muted">{entries.length === 0 ? emptyMessage : 'Nothing matches that filter.'}</p>
         </section>
       ) : null}
 
@@ -139,31 +226,35 @@ export function LogsTab() {
               {visible.map((entry) => {
                 const open = expanded === entry.id;
                 return (
-                  <>
-                    <tr
-                      key={entry.id}
-                      className={open ? 'row-open' : ''}
-                      onClick={() => setExpanded(open ? null : entry.id)}
-                    >
+                  <Fragment key={entry.id}>
+                    <tr className={open ? 'row-open' : ''} onClick={() => setExpanded(open ? null : entry.id)}>
                       <td>
                         <time dateTime={new Date(entry.at).toISOString()}>{formatTime(entry.at)}</time>
                       </td>
                       <td className="origin">{entry.origin || '—'}</td>
                       <td className="truncate">{entry.question}</td>
-                      <td className="truncate">{entry.error ? <span className="error">{entry.error}</span> : entry.answer}</td>
+                      <td className="truncate">
+                        {entry.error ? <span className="error">{entry.error}</span> : entry.answer}
+                      </td>
                       <td>
                         <OutcomeBadge outcome={entry.outcome} />
                       </td>
                       <td className="numeric">{entry.latencyMs ? `${entry.latencyMs} ms` : '—'}</td>
                     </tr>
                     {open ? (
-                      <tr key={`${entry.id}-detail`} className="detail-row">
+                      <tr className="detail-row">
                         <td colSpan={6}>
                           <dl className="pairs">
                             <dt>Question</dt>
                             <dd>{entry.question}</dd>
                             <dt>Answer</dt>
                             <dd>{entry.answer || '—'}</dd>
+                            {entry.explanation ? (
+                              <>
+                                <dt>Explanation</dt>
+                                <dd>{entry.explanation}</dd>
+                              </>
+                            ) : null}
                             {entry.error ? (
                               <>
                                 <dt>Error</dt>
@@ -180,16 +271,25 @@ export function LogsTab() {
                               {entry.provider} · {entry.model}
                             </dd>
                             <dt>Page</dt>
-                            <dd className="break">{entry.title || entry.url || '—'}</dd>
+                            <dd className="break">
+                              {entry.title || entry.url || (server ? entry.origin || '—' : '—')}
+                            </dd>
                           </dl>
                         </td>
                       </tr>
                     ) : null}
-                  </>
+                  </Fragment>
                 );
               })}
             </tbody>
           </table>
+          {server && nextBefore ? (
+            <p className="muted count-line">
+              <button type="button" className="small" onClick={() => void loadOlder()} disabled={loading}>
+                {loading ? 'Loading…' : 'Load older'}
+              </button>
+            </p>
+          ) : null}
         </section>
       ) : null}
     </div>

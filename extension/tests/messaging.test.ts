@@ -504,3 +504,145 @@ describe('the backend keeps control of the provider by default', () => {
     expect(bodies[0]).toMatchObject({ provider: 'anthropic', model: 'claude-opus-5' });
   });
 });
+
+describe('options page → service worker → server history', () => {
+  const ENTRY = {
+    id: '6ab6379dfa5d4668c71ca91d',
+    createdAt: '2026-09-25T08:58:05.596Z',
+    question: 'Which data structure uses FIFO ordering?',
+    type: 'multiple_choice',
+    options: ['Stack', 'Queue'],
+    answer: 'Queue',
+    explanation: 'First in, first out.',
+    provider: 'openai',
+    model: 'gpt-4o-mini',
+    cached: false,
+    latencyMs: 640,
+    origin: 'https://quiz.example.com',
+  };
+
+  it('fetches a page of history, passing the cursor through', async () => {
+    const urls: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string) => {
+        urls.push(url);
+        return Promise.resolve(
+          jsonResponse({ data: { entries: [ENTRY], nextBefore: ENTRY.createdAt }, meta: { enabled: true } }),
+        );
+      }),
+    );
+
+    const response = await send({ kind: 'history:list', limit: 25, before: '2026-09-26T00:00:00.000Z' });
+
+    expect(response).toEqual({
+      ok: true,
+      kind: 'history',
+      page: { enabled: true, entries: [ENTRY], nextBefore: ENTRY.createdAt },
+    });
+    expect(urls[0]).toBe(
+      'http://127.0.0.1:3000/api/history?limit=25&before=2026-09-26T00%3A00%3A00.000Z',
+    );
+  });
+
+  it('clamps the limit and drops a cursor that is not a date', async () => {
+    const urls: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string) => {
+        urls.push(url);
+        return Promise.resolve(jsonResponse({ data: { entries: [] }, meta: { enabled: true } }));
+      }),
+    );
+
+    await send({ kind: 'history:list', limit: 5000, before: 'yesterday' });
+    expect(urls[0]).toBe('http://127.0.0.1:3000/api/history?limit=100');
+  });
+
+  it('reports when the backend keeps no history', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(jsonResponse({ data: { entries: [] }, meta: { enabled: false } }))),
+    );
+
+    await expect(send({ kind: 'history:list' })).resolves.toMatchObject({
+      ok: true,
+      page: { enabled: false, entries: [] },
+    });
+  });
+
+  it('fetches server statistics', async () => {
+    const stats = {
+      total: 3,
+      today: 2,
+      cached: 1,
+      averageLatencyMs: 400,
+      byProvider: [],
+      byType: [],
+      topOrigins: [{ origin: 'https://quiz.example.com', count: 3 }],
+    };
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(jsonResponse({ data: stats, meta: { enabled: true } }))));
+
+    await expect(send({ kind: 'history:stats' })).resolves.toEqual({
+      ok: true,
+      kind: 'server-stats',
+      stats: { ...stats, enabled: true },
+    });
+  });
+
+  it('clears server history', async () => {
+    const methods: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((_url: string, init: RequestInit) => {
+        methods.push(init.method ?? 'GET');
+        return Promise.resolve(jsonResponse({ data: { cleared: true, deleted: 4 } }));
+      }),
+    );
+
+    await expect(send({ kind: 'history:clear' })).resolves.toEqual({
+      ok: true,
+      kind: 'history-cleared',
+      deleted: 4,
+    });
+    expect(methods).toEqual(['POST']);
+  });
+
+  it('passes the backend API key message through when it is wrong', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve(
+          jsonResponse({ error: { code: 'unauthorized', message: 'A valid x-api-key is required.' } }, 401),
+        ),
+      ),
+    );
+
+    await expect(send({ kind: 'history:list' })).resolves.toMatchObject({
+      ok: false,
+      error: 'A valid x-api-key is required.',
+    });
+  });
+
+  it('never serves or clears server history for a content script', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    for (const kind of ['history:list', 'history:stats', 'history:clear']) {
+      await expect(send({ kind }, FROM_TAB)).resolves.toMatchObject({ ok: false, code: 'bad_request' });
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('includes the backend storage status in the health report', async () => {
+    const persistence = { database: 'connected', cache: 'mongodb', history: true };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve(jsonResponse({ status: 'ok', activeProvider: 'openai', providers: ['openai'], persistence })),
+      ),
+    );
+
+    await expect(send({ kind: 'backend:health' })).resolves.toMatchObject({ persistence });
+  });
+});

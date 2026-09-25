@@ -24,6 +24,7 @@ and it does not disguise itself as anything other than a browser extension.
 - [Monitoring and logs](#monitoring-and-logs)
 - [Backend architecture](#backend-architecture)
 - [AI provider architecture](#ai-provider-architecture)
+- [Persistence](#persistence)
 - [Environment configuration](#environment-configuration)
 - [Local development](#local-development)
 - [Installing the extension](#installing-the-extension)
@@ -34,6 +35,7 @@ and it does not disguise itself as anything other than a browser extension.
 - [Testing](#testing)
 - [Manual testing](TESTING.md)
 - [Docker](#docker)
+- [Deploying the backend](#deploying-the-backend)
 - [Adding a new AI provider](#adding-a-new-ai-provider)
 - [Project structure](#project-structure)
 - [Future improvements](#future-improvements)
@@ -101,12 +103,13 @@ Two rules shape the whole design:
 | Browser APIs | Content scripts, service worker, `chrome.storage`, `chrome.scripting`, `chrome.permissions`, MutationObserver, message passing |
 | Backend | Node.js, TypeScript, Express 5, Zod, Helmet, CORS, `express-rate-limit`, pino |
 | AI SDKs | `openai`, `@google/genai`, `@anthropic-ai/sdk` |
-| Testing | Vitest (jsdom for the extension, node for the backend), Supertest |
+| Persistence | MongoDB / MongoDB Atlas (optional), official `mongodb` driver |
+| Testing | Vitest (jsdom for the extension, node for the backend), Supertest, mongodb-memory-server |
 | Tooling | npm workspaces, Docker, Docker Compose |
 
-Persistence is optional and not used in this version. The architecture is
-prepared for MongoDB / MongoDB Atlas — see
-[Future improvements](#future-improvements).
+Persistence is optional. Without `MONGODB_URI` the backend runs entirely in
+memory; with it, the answer cache and question history live in MongoDB or
+MongoDB Atlas — see [Persistence](#persistence).
 
 ---
 
@@ -256,7 +259,29 @@ confidently, so nothing was touched), `nothing to fill` and `error`.
 
 The log lives in `chrome.storage.local`, is capped (500 entries by default,
 oldest dropped first), and is never transmitted anywhere. Recording can be
-switched off entirely under **Settings → Activity log**.
+switched off entirely under **Settings → Activity log**. This local log is
+separate from the backend's own question history, which exists only when the
+backend has MongoDB configured — see [Persistence](#persistence).
+
+### This browser or the server
+
+Both tabs have a **This browser | Server** switch, remembered between visits:
+
+| | This browser | Server |
+|---|---|---|
+| Source | `chrome.storage.local` | the backend's `/api/history` and `/api/stats` |
+| Covers | this browser only | every browser and device using the backend |
+| Outcomes | all, including `filled`, `no match` and `error` | `answered` and `cached` only — the server never sees the page |
+| Fourth counter | errors | average response time |
+| Kept | last 500 entries | `HISTORY_RETENTION_DAYS` (default 90) |
+| Monitor refresh | every 4 s | every 30 s, to stay well inside the backend's rate limit |
+
+The server view loads 100 entries at a time with **Load older**, and **Clear**
+asks for a second click before deleting anything from the server. If the
+backend keeps no history, or rejects the API key, the tab says so rather than
+showing an empty list. **Check now** on the Monitor also reports the backend's
+storage: whether MongoDB is connected, where the cache lives and whether
+history is on.
 
 ---
 
@@ -295,7 +320,11 @@ Express
  ├── GET  /api/health              (unauthenticated, for the options page)
  └── /api  → x-api-key auth → rate limit
       ├── POST /questions/answer   → QuestionService → ProviderFactory → AIProvider
-      └── POST /cache/clear
+      │                                   ↘ AnswerStore (memory | MongoDB)
+      │                                   ↘ HistoryStore (off | MongoDB)
+      ├── POST /cache/clear
+      ├── GET  /history, GET /stats
+      └── POST /history/clear
 ```
 
 - **Zod validates both directions.** A provider that returns something
@@ -307,9 +336,9 @@ Express
 - **Timeouts are enforced locally**, so a provider that stops responding cannot
   hold an Express request open. A client that disconnects aborts the provider
   call with it.
-- **The cache is an interface** (`AnswerStore`) with an in-memory LRU
-  implementation, so Redis or MongoDB can be dropped in without touching the
-  service.
+- **The cache is an interface** (`AnswerStore`) with an in-memory LRU and a
+  MongoDB implementation, chosen at startup; Redis would slot in the same way.
+  A cache that fails mid-request costs a provider call, never the answer.
 
 ---
 
@@ -361,6 +390,41 @@ you want automatic re-routing.
 
 ---
 
+## Persistence
+
+Set `MONGODB_URI` in `server/.env` and the backend keeps two collections:
+
+| Collection | What it holds | Expiry |
+|---|---|---|
+| `answer_cache` | One answer per question + options + context + provider + model | `CACHE_TTL_MS` (default 30 min), via a TTL index |
+| `question_history` | Question, type, options, answer, explanation, confidence, provider, model, cached flag, latency, page **origin** | `HISTORY_RETENTION_DAYS` (default 90), via a TTL index |
+
+Why it matters once the backend is hosted: the cache survives restarts and
+redeploys and is shared by every instance, and history and usage statistics
+exist somewhere other than one browser's `chrome.storage.local`.
+
+| `MONGODB_URI` | `CACHE_ENABLED` | `HISTORY_ENABLED` | Cache | History |
+|---|---|---|---|---|
+| unset | true | (ignored) | memory | off |
+| set | true | true | MongoDB | on |
+| set | true | false | MongoDB | off |
+| set | false | true | off | on |
+
+- **Startup fails if `MONGODB_URI` is set but unreachable**, with the reason —
+  silently falling back to memory would lose history without anyone noticing.
+  Unset it to run without persistence.
+- **Atlas:** use the `mongodb+srv://` string from *Connect → Drivers*, put the
+  database name in the path (`…mongodb.net/quiz-shop?…`), and add the
+  server's outbound IP under *Network Access*.
+- **`querySrv ECONNREFUSED`** means the machine's DNS resolver refused the SRV
+  lookup `mongodb+srv://` needs, which some VPNs and endpoint agents do. Set
+  `MONGODB_DNS_SERVERS=8.8.8.8,1.1.1.1`; it changes only the driver's SRV/TXT
+  lookups.
+- `GET /api/health` reports `persistence.database` as `connected`,
+  `unreachable` (status becomes `degraded`) or `not_configured`.
+
+---
+
 ## Environment configuration
 
 Copy `server/.env.example` to `server/.env` and fill in the provider you want.
@@ -381,7 +445,7 @@ PORT=3000
 ```
 
 The full list — CORS origins, rate limits, timeouts, body size, cache settings,
-the optional `API_ACCESS_KEY` shared secret and the reserved `MONGODB_URI` — is
+the `API_ACCESS_KEY` shared secret and the MongoDB settings — is
 documented inline in `server/.env.example`.
 
 **API keys stay on the backend.** They are never bundled into the extension,
@@ -515,13 +579,68 @@ none returns, raw chain-of-thought.
   "uptimeSeconds": 42,
   "activeProvider": "openai",
   "providers": ["openai"],
-  "allProviders": [{ "id": "openai", "label": "OpenAI", "configured": true, "defaultModel": "gpt-4o-mini" }]
+  "allProviders": [{ "id": "openai", "label": "OpenAI", "configured": true, "defaultModel": "gpt-4o-mini" }],
+  "persistence": { "database": "connected", "cache": "mongodb", "history": true }
 }
 ```
 
 ### `POST /api/cache/clear`
 
 Empties the backend answer cache. Returns `{ "data": { "cleared": true } }`.
+
+### `GET /api/history?limit=25&before=<ISO date>`
+
+Newest first. `limit` is 1–100 (default 25); pass `data.nextBefore` back as
+`before` for the next page.
+
+```json
+{
+  "data": {
+    "entries": [
+      {
+        "id": "6ab6379dfa5d4668c71ca91d",
+        "createdAt": "2026-09-25T08:58:05.596Z",
+        "question": "Which data structure uses FIFO ordering?",
+        "type": "multiple_choice",
+        "options": ["Stack", "Queue", "Tree", "Heap"],
+        "answer": "Queue",
+        "explanation": "…",
+        "confidence": 0.92,
+        "provider": "openai",
+        "model": "gpt-4o-mini",
+        "cached": false,
+        "latencyMs": 812,
+        "origin": "https://quiz.example.com"
+      }
+    ],
+    "nextBefore": "2026-09-25T08:58:05.596Z"
+  },
+  "meta": { "enabled": true }
+}
+```
+
+`meta.enabled` is `false` when history is not kept (no `MONGODB_URI`, or
+`HISTORY_ENABLED=false`), so an empty list can be told apart from "off".
+
+### `GET /api/stats`
+
+```json
+{
+  "data": {
+    "total": 120, "today": 14, "cached": 31, "averageLatencyMs": 640,
+    "byProvider": [{ "provider": "openai", "model": "gpt-4o-mini", "count": 120 }],
+    "byType": [{ "type": "multiple_choice", "count": 96 }],
+    "topOrigins": [{ "origin": "https://quiz.example.com", "count": 80 }]
+  },
+  "meta": { "enabled": true }
+}
+```
+
+### `POST /api/history/clear`
+
+Deletes all history. Returns `{ "data": { "cleared": true, "deleted": 120 } }`.
+
+History and stats sit behind the same `x-api-key` and rate limit as answering.
 
 ### Errors
 
@@ -551,7 +670,9 @@ Implemented:
 - Helmet, explicit CORS allow-list (with a trailing-wildcard form so the
   development extension id does not have to be pinned), rate limiting, Zod
   validation on input and output, and a request body size limit.
-- Optional shared-secret authentication, compared in constant time.
+- Shared-secret authentication, compared in constant time — optional in
+  development, required when `NODE_ENV=production` (the server will not start
+  without it).
 - API keys server-side only; never in the extension bundle, never logged —
   pino redacts `authorization`, `x-api-key` and `cookie`.
 - No `eval`, no `new Function`, no remote code, no page-supplied JavaScript
@@ -587,8 +708,15 @@ What is transmitted, and nothing else:
 | `source` | Page URL and title |
 
 The full page is never sent. Navigation, adverts and footers are excluded
-before extraction. Nothing is stored on disk by the backend; the answer cache is
-in memory and expires. Settings live in `chrome.storage.sync`.
+before extraction. Settings live in `chrome.storage.sync`.
+
+**What the backend stores depends on `MONGODB_URI`.** Without it, nothing is
+written anywhere: the answer cache is in memory and expires. With it, cached
+answers (30 minutes by default) and question history (90 days by default) are
+stored in your MongoDB database. History keeps the question, options, answer
+and the page's **origin** only — never the page context, the full URL or the
+page title. Turn it off with `HISTORY_ENABLED=false`, shorten it with
+`HISTORY_RETENTION_DAYS`, or wipe it with `POST /api/history/clear`.
 
 **The AI provider you select will process the question and context you send.**
 That is inherent to the design — choose the provider accordingly, and set
@@ -647,14 +775,51 @@ handling, a real provider - is a stage-by-stage checklist in
 ## Docker
 
 ```bash
-docker compose up                        # backend only
-docker compose --profile persistence up  # backend + MongoDB (reserved for later)
+docker compose up                        # backend (uses Atlas if MONGODB_URI is set)
+docker compose --profile persistence up  # backend + a local MongoDB
 ```
+
+For the local MongoDB, set `MONGODB_URI=mongodb://mongo:27017/quiz-shop` in
+`server/.env`. Compose runs the backend with `NODE_ENV=production`, so
+`API_ACCESS_KEY` must be set.
 
 The image is a multi-stage build that runs as the non-root `node` user and has
 a health check against `/api/health`. It reads `server/.env`.
 
 Docker is never required for development — `npm run dev` is enough.
+
+---
+
+## Deploying the backend
+
+With persistence in MongoDB Atlas the backend holds no state of its own, so
+any host that runs a container or a Node process will do: Render, Railway,
+Fly.io, Cloud Run, a VPS.
+
+1. **Build:** `docker build -f server/Dockerfile .` from the repository root,
+   or on a Node host `npm ci && npm run build:server` then
+   `node server/dist/index.js`.
+2. **Environment** (the host's secret settings, not a committed file):
+
+   | Variable | Value |
+   |---|---|
+   | `NODE_ENV` | `production` — binds `0.0.0.0`, CORS defaults to `chrome-extension://*` |
+   | `API_ACCESS_KEY` | a long random string — **required** in production |
+   | `AI_PROVIDER` + that provider's key | e.g. `openai` + `OPENAI_API_KEY` |
+   | `MONGODB_URI` | your Atlas connection string |
+   | `CORS_ALLOWED_ORIGINS` | optional; pin `chrome-extension://<id>` once the extension id is fixed |
+   | `PORT` | usually injected by the host |
+
+3. **Atlas:** add the host's outbound IP under *Network Access* (or
+   `0.0.0.0/0` on hosts without a stable IP, which leaves the database
+   password as the only guard — use a strong one).
+4. **Health check:** point the host at `GET /api/health`.
+5. **Extension:** in **Settings → Backend**, set the URL to the deployed
+   `https://…` address and the API key to `API_ACCESS_KEY`, then **Test
+   connection**.
+
+`trust proxy` is set to one hop, which matches a single load balancer in front
+of the app; the rate limiter uses the forwarded client address.
 
 ---
 
@@ -689,10 +854,12 @@ ai-browser-assistant/
 │   └── tests/
 ├── server/
 │   ├── src/
-│   │   ├── controllers/  question, health
+│   │   ├── controllers/  question, health, history
 │   │   ├── question/     schema, prompt, service
 │   │   ├── providers/    interface, factory, four adapters, errors
-│   │   ├── cache/        AnswerStore + in-memory LRU
+│   │   ├── cache/        AnswerStore: in-memory LRU, MongoDB
+│   │   ├── history/      HistoryStore: question history + usage stats
+│   │   ├── db/           MongoDB connection, persistence wiring
 │   │   ├── middleware/   security, error handling
 │   │   ├── config/       env, logger
 │   │   └── app.ts
@@ -709,10 +876,9 @@ ai-browser-assistant/
 
 ## Future improvements
 
-- **Persistence.** `MONGODB_URI` and the `mongo` compose profile are already
-  reserved; the `AnswerStore` interface is the seam for it. Question history,
-  practice sessions, saved explanations and usage statistics all fit behind it.
-- **Redis cache** shared across backend instances, same interface.
+- **More persistence.** Practice sessions, saved explanations and synced user
+  preferences, on the same MongoDB connection.
+- **Redis cache**, behind the same `AnswerStore` interface.
 - **Streaming answers** to the service worker for long explanations.
 - **A popup** showing the answers found on the current page, for when you want
   to read the explanation rather than fill the form.

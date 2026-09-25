@@ -3,6 +3,10 @@
  * unpacked extension in dist/ stays current while developing.
  */
 import { spawn } from 'node:child_process';
+import { rmSync } from 'node:fs';
+
+// Neither watcher empties dist/ (they share it), so clear stale output once.
+rmSync(new URL('../dist', import.meta.url), { recursive: true, force: true });
 
 const targets = [
   ['vite', ['build', '--watch', '--mode', 'development']],

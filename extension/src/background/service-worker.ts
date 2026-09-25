@@ -19,7 +19,14 @@ import type {
   QuestionType,
   RuntimeStatus,
 } from '../shared/types';
-import { BackendError, checkHealth, requestAnswer } from './backend-client';
+import {
+  BackendError,
+  checkHealth,
+  clearServerHistory,
+  fetchHistory,
+  fetchServerStats,
+  requestAnswer,
+} from './backend-client';
 import { createAnswerCache } from './cache';
 import { createPacer } from './pacer';
 import { readSettings, sanitize, writeSettings } from './settings';
@@ -178,7 +185,40 @@ async function handle(
         kind: 'health',
         providers: health.providers ?? [],
         activeProvider: health.activeProvider || settings.provider || 'unknown',
+        ...(health.persistence ? { persistence: health.persistence } : {}),
       };
+    } catch (error) {
+      return toFailure(error);
+    }
+  }
+
+  if (hasKind(payload, 'history:list')) {
+    const limit =
+      typeof payload.limit === 'number' && Number.isInteger(payload.limit)
+        ? Math.min(Math.max(payload.limit, 1), 100)
+        : undefined;
+    const before =
+      typeof payload.before === 'string' && !Number.isNaN(Date.parse(payload.before))
+        ? payload.before
+        : undefined;
+    try {
+      return { ok: true, kind: 'history', page: await fetchHistory(await readSettings(), { limit, before }) };
+    } catch (error) {
+      return toFailure(error);
+    }
+  }
+
+  if (hasKind(payload, 'history:stats')) {
+    try {
+      return { ok: true, kind: 'server-stats', stats: await fetchServerStats(await readSettings()) };
+    } catch (error) {
+      return toFailure(error);
+    }
+  }
+
+  if (hasKind(payload, 'history:clear')) {
+    try {
+      return { ok: true, kind: 'history-cleared', deleted: await clearServerHistory(await readSettings()) };
     } catch (error) {
       return toFailure(error);
     }

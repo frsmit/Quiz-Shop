@@ -122,6 +122,15 @@ beforeEach(() => {
   stored = { ...DEFAULT_SETTINGS };
   log = [logEntry()];
   respond = defaultRespond;
+  // Node 25's own experimental `localStorage` global shadows jsdom's, so
+  // give each test a fresh, working one.
+  const memory = new Map<string, string>();
+  vi.stubGlobal('localStorage', {
+    getItem: (key: string) => memory.get(key) ?? null,
+    setItem: (key: string, value: string) => void memory.set(key, String(value)),
+    removeItem: (key: string) => void memory.delete(key),
+    clear: () => memory.clear(),
+  });
   installChrome();
 });
 
@@ -410,5 +419,131 @@ describe('activity log', () => {
     log = [];
     await open('Activity log');
     expect(await screen.findByText(/The log is empty/)).toBeTruthy();
+  });
+});
+
+describe('server history', () => {
+  const SERVER_ENTRY = {
+    id: '6ab6379dfa5d4668c71ca91d',
+    createdAt: new Date().toISOString(),
+    question: 'Which data structure uses FIFO ordering?',
+    type: 'multiple_choice',
+    options: ['Stack', 'Queue'],
+    answer: 'Queue',
+    explanation: 'First in, first out.',
+    provider: 'openai',
+    model: 'gpt-4o-mini',
+    cached: true,
+    latencyMs: 12,
+    origin: 'https://quiz.example.com',
+  };
+
+  function withServer(options: { enabled?: boolean; error?: string } = {}) {
+    respond = (message) => {
+      if (options.error && message.kind.startsWith('history:')) {
+        return { ok: false, code: 'bad_request', error: options.error };
+      }
+      switch (message.kind) {
+        case 'history:list':
+          return {
+            ok: true,
+            kind: 'history',
+            page: { enabled: options.enabled ?? true, entries: options.enabled === false ? [] : [SERVER_ENTRY] },
+          };
+        case 'history:stats':
+          return {
+            ok: true,
+            kind: 'server-stats',
+            stats: {
+              enabled: options.enabled ?? true,
+              total: 42,
+              today: 5,
+              cached: 9,
+              averageLatencyMs: 640,
+              byProvider: [],
+              byType: [],
+              topOrigins: [{ origin: 'https://quiz.example.com', count: 42 }],
+            },
+          };
+        case 'history:clear':
+          return { ok: true, kind: 'history-cleared', deleted: 42 };
+        default:
+          return defaultRespond(message);
+      }
+    };
+  }
+
+  it('shows server counters and recent questions on the monitor', async () => {
+    withServer();
+    const user = await open('Monitor');
+    await user.click(await screen.findByRole('button', { name: 'Server' }));
+
+    expect(await screen.findByText('answered in total')).toBeTruthy();
+    expect(screen.getAllByText('42').length).toBeGreaterThan(0);
+    expect(screen.getByText('640 ms')).toBeTruthy();
+    expect(screen.getByText('average response')).toBeTruthy();
+    expect(screen.getByText(/Which data structure uses FIFO/)).toBeTruthy();
+  });
+
+  it('lists server history in the activity log, with the explanation in the detail', async () => {
+    withServer();
+    const user = await open('Activity log');
+    await user.click(screen.getByRole('button', { name: 'Server' }));
+
+    await user.click(await screen.findByText(/Which data structure uses FIFO/));
+    expect(await screen.findByText('First in, first out.')).toBeTruthy();
+    expect(screen.getByText(/1 of 1 entry on the server/)).toBeTruthy();
+  });
+
+  it('offers only the filters the server can answer', async () => {
+    withServer();
+    const user = await open('Activity log');
+    await user.click(screen.getByRole('button', { name: 'Server' }));
+    await screen.findByText(/Which data structure uses FIFO/);
+
+    expect(screen.queryByRole('button', { name: 'Errors' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'No match' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Cached' })).toBeTruthy();
+  });
+
+  it('asks twice before deleting server history', async () => {
+    withServer();
+    const user = await open('Activity log');
+    await user.click(screen.getByRole('button', { name: 'Server' }));
+    await screen.findByText(/Which data structure uses FIFO/);
+
+    await user.click(screen.getByRole('button', { name: 'Clear' }));
+    expect(sent.some((message) => message.kind === 'history:clear')).toBe(false);
+
+    await user.click(screen.getByRole('button', { name: 'Delete from server?' }));
+    expect(sent.some((message) => message.kind === 'history:clear')).toBe(true);
+    expect(await screen.findByText(/Deleted 42 entries from the server/)).toBeTruthy();
+  });
+
+  it('explains when the backend keeps no history', async () => {
+    withServer({ enabled: false });
+    const user = await open('Activity log');
+    await user.click(screen.getByRole('button', { name: 'Server' }));
+
+    expect(await screen.findByText(/not keeping history/)).toBeTruthy();
+  });
+
+  it('shows the backend error, such as a wrong API key', async () => {
+    withServer({ error: 'A valid x-api-key is required.' });
+    const user = await open('Activity log');
+    await user.click(screen.getByRole('button', { name: 'Server' }));
+
+    expect(await screen.findByText('A valid x-api-key is required.')).toBeTruthy();
+  });
+
+  it('remembers the chosen source', async () => {
+    withServer();
+    const user = await open('Activity log');
+    await user.click(screen.getByRole('button', { name: 'Server' }));
+    await screen.findByText(/Which data structure uses FIFO/);
+    cleanup();
+
+    await open('Activity log');
+    expect(await screen.findByText(/on the server/)).toBeTruthy();
   });
 });

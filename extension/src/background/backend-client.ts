@@ -5,7 +5,15 @@
  * own API and nothing else. Failures are mapped onto a small set of codes the
  * content script and options page can act on.
  */
-import type { ExtensionSettings, QuestionAnswer, QuestionRequest } from '../shared/types';
+import type {
+  ExtensionSettings,
+  QuestionAnswer,
+  QuestionRequest,
+  ServerHistoryEntry,
+  ServerHistoryPage,
+  ServerPersistence,
+  ServerStats,
+} from '../shared/types';
 import type { WorkerErrorCode } from '../shared/messages';
 
 export class BackendError extends Error {
@@ -22,6 +30,12 @@ export interface HealthResponse {
   status: string;
   activeProvider: string;
   providers: string[];
+  persistence?: ServerPersistence;
+}
+
+interface ListEnvelope<T> {
+  data?: T;
+  meta?: { enabled?: boolean };
 }
 
 interface AnswerEnvelope {
@@ -51,6 +65,53 @@ export async function requestAnswer(
 
 export async function checkHealth(settings: ExtensionSettings): Promise<HealthResponse> {
   return call<HealthResponse>('/api/health', { method: 'GET' }, settings);
+}
+
+/** One page of the backend's question history, newest first. */
+export async function fetchHistory(
+  settings: ExtensionSettings,
+  options: { limit?: number; before?: string } = {},
+): Promise<ServerHistoryPage> {
+  const query = new URLSearchParams();
+  if (options.limit !== undefined) query.set('limit', String(options.limit));
+  if (options.before) query.set('before', options.before);
+  const suffix = query.size ? `?${query.toString()}` : '';
+
+  const payload = await call<ListEnvelope<{ entries?: ServerHistoryEntry[]; nextBefore?: string }>>(
+    `/api/history${suffix}`,
+    { method: 'GET' },
+    settings,
+  );
+  const entries = payload.data?.entries;
+  if (!Array.isArray(entries)) {
+    throw new BackendError('The backend returned malformed history.', 'provider_error');
+  }
+  return {
+    enabled: payload.meta?.enabled === true,
+    entries,
+    ...(payload.data?.nextBefore ? { nextBefore: payload.data.nextBefore } : {}),
+  };
+}
+
+export async function fetchServerStats(settings: ExtensionSettings): Promise<ServerStats> {
+  const payload = await call<ListEnvelope<Omit<ServerStats, 'enabled'>>>(
+    '/api/stats',
+    { method: 'GET' },
+    settings,
+  );
+  if (!payload.data || typeof payload.data.total !== 'number') {
+    throw new BackendError('The backend returned malformed statistics.', 'provider_error');
+  }
+  return { ...payload.data, enabled: payload.meta?.enabled === true };
+}
+
+export async function clearServerHistory(settings: ExtensionSettings): Promise<number> {
+  const payload = await call<ListEnvelope<{ deleted?: number }>>(
+    '/api/history/clear',
+    { method: 'POST' },
+    settings,
+  );
+  return payload.data?.deleted ?? 0;
 }
 
 async function call<T>(path: string, init: RequestInit, settings: ExtensionSettings): Promise<T> {

@@ -1,8 +1,10 @@
 # Starts the backend. Everything else in the project - the extension and the
 # demo page - runs on the host, so Docker is convenient but never required.
 #
-#   docker compose up                       backend only
-#   docker compose --profile persistence up backend + MongoDB
+#   docker compose up                       backend; MongoDB only if server/.env
+#                                           sets MONGODB_URI (e.g. to Atlas)
+#   docker compose --profile persistence up backend + a local MongoDB; set
+#                                           MONGODB_URI=mongodb://mongo:27017/quiz-shop
 services:
   backend:
     build:
@@ -14,6 +16,7 @@ services:
     env_file:
       - server/.env
     environment:
+      # Production mode requires API_ACCESS_KEY in server/.env.
       NODE_ENV: production
       HOST: 0.0.0.0
       PORT: '3000'
@@ -21,9 +24,9 @@ services:
       CORS_ALLOWED_ORIGINS: 'chrome-extension://*,http://localhost:5173'
     restart: unless-stopped
 
-  # Not used by this version. The architecture is prepared for persistence
-  # (question history, sessions, saved explanations), so the service is here
-  # behind a profile rather than in a future branch.
+  # A local MongoDB for the answer cache and question history, for when
+  # Atlas is not wanted. Point the backend at it with
+  # MONGODB_URI=mongodb://mongo:27017/quiz-shop in server/.env.
   mongo:
     image: mongo:7
     profiles:

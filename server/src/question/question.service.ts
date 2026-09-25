@@ -7,6 +7,7 @@
  */
 import { createHash } from 'node:crypto';
 import type { AnswerStore } from '../cache/answer-cache.js';
+import type { HistoryStore } from '../history/history-store.js';
 import type { ProviderRegistry } from '../providers/provider.factory.js';
 import type { QuestionAnswer, QuestionRequest } from './question.schema.js';
 import { withRetry } from '../providers/retry.js';
@@ -21,6 +22,9 @@ export interface QuestionServiceOptions {
   /** Attempts per question, including the first. */
   maxAttempts?: number;
   baseRetryDelayMs?: number;
+  /** Where answered questions are recorded; omitted means nowhere. */
+  history?: HistoryStore;
+  now?: () => number;
 }
 
 export class QuestionService {
@@ -28,6 +32,8 @@ export class QuestionService {
   private readonly inFlight = new Map<string, Promise<QuestionAnswer>>();
   private readonly maxAttempts: number;
   private readonly baseRetryDelayMs: number;
+  private readonly history: HistoryStore | undefined;
+  private readonly now: () => number;
 
   constructor(
     private readonly factory: ProviderRegistry,
@@ -36,13 +42,27 @@ export class QuestionService {
   ) {
     this.maxAttempts = options.maxAttempts ?? 3;
     this.baseRetryDelayMs = options.baseRetryDelayMs ?? 1_000;
+    this.history = options.history;
+    this.now = options.now ?? Date.now;
   }
 
   async answer(request: QuestionRequest, signal?: AbortSignal): Promise<AnswerResult> {
+    const startedAt = this.now();
+    const result = await this.resolve(request, signal);
+    this.record(request, result, this.now() - startedAt);
+    return result;
+  }
+
+  private async resolve(request: QuestionRequest, signal?: AbortSignal): Promise<AnswerResult> {
     const provider = this.factory.create(request.provider, request.model);
     const key = cacheKey(provider.getName(), provider.getModel(), request);
 
-    const hit = await this.store.get(key);
+    // A cache that is down (a MongoDB blip, say) costs a provider call, not
+    // the answer.
+    const hit = await this.store.get(key).catch((error: unknown) => {
+      getLogger().warn({ err: error }, 'Answer cache read failed; asking the provider');
+      return undefined;
+    });
     if (hit) return { answer: hit, cached: true };
 
     const pending = this.inFlight.get(key);
@@ -61,7 +81,9 @@ export class QuestionService {
       },
     })
       .then(async (answer) => {
-        await this.store.set(key, answer);
+        await this.store.set(key, answer).catch((error: unknown) => {
+          getLogger().warn({ err: error }, 'Answer cache write failed');
+        });
         return answer;
       })
       .finally(() => {
@@ -74,6 +96,16 @@ export class QuestionService {
 
   clearCache(): Promise<void> {
     return this.store.clear();
+  }
+
+  /** Fire and forget: history is a record, and never delays or fails an answer. */
+  private record(request: QuestionRequest, result: AnswerResult, latencyMs: number): void {
+    if (!this.history?.enabled) return;
+    this.history
+      .record({ request, answer: result.answer, cached: result.cached, latencyMs })
+      .catch((error: unknown) => {
+        getLogger().warn({ err: error }, 'Could not record question history');
+      });
   }
 }
 

@@ -7,11 +7,14 @@ import react from '@vitejs/plugin-react';
  * worker. The content script is built separately (see vite.content.config.ts)
  * because content scripts must be a single classic script, not an ES module.
  */
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   plugins: [react()],
   build: {
     outDir: 'dist',
-    emptyOutDir: true,
+    // In watch mode (scripts/dev.mjs) both builds write into dist/ side by
+    // side, so emptying it here would delete content.js on every rebuild.
+    // dev.mjs clears dist/ once before either watcher starts instead.
+    emptyOutDir: mode !== 'development',
     target: 'chrome114',
     sourcemap: true,
     rollupOptions: {
@@ -27,4 +30,4 @@ export default defineConfig({
       },
     },
   },
-});
+}));

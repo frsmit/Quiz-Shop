@@ -150,6 +150,8 @@ export interface ActivityEntry {
   latencyMs: number;
   outcome: ActivityOutcome;
   error?: string;
+  /** Present on entries that came from the backend's history. */
+  explanation?: string;
 }
 
 export interface ActivityStats {
@@ -160,4 +162,51 @@ export interface ActivityStats {
   lastAt: number | null;
   /** Answer counts keyed by origin, most recent first. */
   byOrigin: Array<{ origin: string; count: number }>;
+}
+
+/**
+ * The backend's own question history (only when it has MongoDB configured).
+ * Narrower than `ActivityEntry`: the server records answers it produced, so
+ * it knows nothing of page-side outcomes, page URLs or titles.
+ */
+export interface ServerHistoryEntry {
+  id: string;
+  createdAt: string;
+  question: string;
+  type: QuestionType;
+  options?: string[];
+  answer: string;
+  explanation: string;
+  confidence?: number;
+  provider: string;
+  model: string;
+  cached: boolean;
+  latencyMs: number;
+  origin?: string;
+}
+
+export interface ServerHistoryPage {
+  /** False when the backend keeps no history; entries are then empty. */
+  enabled: boolean;
+  entries: ServerHistoryEntry[];
+  /** Cursor for the next (older) page; absent on the last one. */
+  nextBefore?: string;
+}
+
+export interface ServerStats {
+  enabled: boolean;
+  total: number;
+  today: number;
+  cached: number;
+  averageLatencyMs: number;
+  byProvider: Array<{ provider: string; model: string; count: number }>;
+  byType: Array<{ type: string; count: number }>;
+  topOrigins: Array<{ origin: string; count: number }>;
+}
+
+/** What `/api/health` says about the backend's storage. */
+export interface ServerPersistence {
+  database: 'connected' | 'unreachable' | 'not_configured';
+  cache: 'mongodb' | 'memory' | 'off';
+  history: boolean;
 }

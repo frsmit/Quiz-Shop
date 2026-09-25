@@ -14,6 +14,9 @@ import type {
   QuestionAnswer,
   QuestionRequest,
   RuntimeStatus,
+  ServerHistoryPage,
+  ServerPersistence,
+  ServerStats,
 } from './types';
 
 export const MESSAGE_SOURCE = 'ai-browser-assistant' as const;
@@ -38,6 +41,9 @@ export type UiToWorkerMessage =
   | { kind: 'log:list'; limit?: number }
   | { kind: 'log:stats' }
   | { kind: 'log:clear' }
+  | { kind: 'history:list'; limit?: number; before?: string }
+  | { kind: 'history:stats' }
+  | { kind: 'history:clear' }
   | { kind: 'site:enable'; origin: string }
   | { kind: 'site:disable'; origin: string };
 
@@ -46,7 +52,17 @@ export type WorkerMessage = ContentToWorkerMessage | UiToWorkerMessage;
 export type WorkerResponse =
   | { ok: true; kind: 'answer'; answer: QuestionAnswer; cached: boolean }
   | { ok: true; kind: 'settings'; settings: ExtensionSettings }
-  | { ok: true; kind: 'health'; providers: string[]; activeProvider: string }
+  | {
+      ok: true;
+      kind: 'health';
+      providers: string[];
+      activeProvider: string;
+      /** Absent from backends that predate persistence. */
+      persistence?: ServerPersistence;
+    }
+  | { ok: true; kind: 'history'; page: ServerHistoryPage }
+  | { ok: true; kind: 'server-stats'; stats: ServerStats }
+  | { ok: true; kind: 'history-cleared'; deleted: number }
   | { ok: true; kind: 'run'; status: RuntimeStatus }
   | { ok: true; kind: 'log'; entries: ActivityEntry[] }
   | { ok: true; kind: 'stats'; stats: ActivityStats }

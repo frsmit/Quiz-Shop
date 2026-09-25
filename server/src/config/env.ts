@@ -25,7 +25,9 @@ function splitCsv(value: string): string[] {
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
-  HOST: z.string().default('127.0.0.1'),
+  /** Unset means loopback in development and all interfaces in production,
+   *  which is what a hosted container or PaaS needs. */
+  HOST: z.string().optional(),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
 
   /** Which adapter the provider factory builds by default. */
@@ -45,10 +47,12 @@ const envSchema = z.object({
   API_ACCESS_KEY: z.string().optional(),
 
   /** Browser extensions send `Origin: chrome-extension://<id>`. */
+  /** Unset means the extension plus the local demo page in development, and
+   *  the extension alone in production. */
   CORS_ALLOWED_ORIGINS: z
     .string()
-    .default('chrome-extension://*,http://localhost:5173')
-    .transform(splitCsv),
+    .optional()
+    .transform((value) => (value ? splitCsv(value) : undefined)),
 
   RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60_000),
   RATE_LIMIT_MAX: z.coerce.number().int().positive().default(30),
@@ -68,11 +72,56 @@ const envSchema = z.object({
   CACHE_TTL_MS: z.coerce.number().int().positive().default(1_800_000),
   CACHE_MAX_ENTRIES: z.coerce.number().int().positive().default(500),
 
-  /** Reserved for the optional persistence layer; unused in this version. */
+  /**
+   * Optional persistence. When set, the answer cache and question history
+   * live in MongoDB (local or Atlas); when unset, the cache is in memory and
+   * no history is kept.
+   */
   MONGODB_URI: z.string().optional(),
+  /**
+   * DNS servers for the driver's `mongodb+srv://` SRV/TXT lookups, e.g.
+   * `8.8.8.8,1.1.1.1`. Only needed where the local resolver refuses SRV
+   * queries (some VPNs and endpoint agents); leave unset otherwise.
+   */
+  MONGODB_DNS_SERVERS: z
+    .string()
+    .optional()
+    .transform((value) => (value ? splitCsv(value) : undefined)),
+  /** Database name; defaults to the one in the URI path, else `quiz-shop`. */
+  MONGODB_DB: z.string().optional(),
+  /** Store each answered question server-side. Only applies with MONGODB_URI. */
+  HISTORY_ENABLED: booleanish.default(true),
+  /** History entries older than this are deleted by a TTL index. */
+  HISTORY_RETENTION_DAYS: z.coerce.number().int().min(1).max(3650).default(90),
 });
 
-export type Env = z.infer<typeof envSchema>;
+type ParsedEnv = z.infer<typeof envSchema>;
+
+export type Env = Omit<ParsedEnv, 'HOST' | 'CORS_ALLOWED_ORIGINS'> & {
+  HOST: string;
+  CORS_ALLOWED_ORIGINS: string[];
+};
+
+const DEV_CORS = ['chrome-extension://*', 'http://localhost:5173'];
+const PROD_CORS = ['chrome-extension://*'];
+
+/** Environment-dependent defaults, plus rules that only hold in production. */
+function finalize(parsed: ParsedEnv): Env {
+  const production = parsed.NODE_ENV === 'production';
+
+  if (production && !parsed.API_ACCESS_KEY) {
+    throw new Error(
+      'Invalid environment configuration:\n  API_ACCESS_KEY: required when NODE_ENV=production, ' +
+        'so a hosted backend cannot be used by anyone who finds its URL.',
+    );
+  }
+
+  return {
+    ...parsed,
+    HOST: parsed.HOST ?? (production ? '0.0.0.0' : '127.0.0.1'),
+    CORS_ALLOWED_ORIGINS: parsed.CORS_ALLOWED_ORIGINS ?? (production ? PROD_CORS : DEV_CORS),
+  };
+}
 
 let cached: Env | null = null;
 
@@ -95,7 +144,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
       .join('\n');
     throw new Error(`Invalid environment configuration:\n${details}`);
   }
-  return parsed.data;
+  return finalize(parsed.data);
 }
 
 /** The process-wide configuration, parsed once. */

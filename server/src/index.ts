@@ -5,8 +5,9 @@ import { createApp } from './app.js';
 import { getEnv } from './config/env.js';
 import { getLogger } from './config/logger.js';
 import { ProviderFactory } from './providers/provider.factory.js';
+import { createPersistence } from './db/persistence.js';
 
-function main(): void {
+async function main(): Promise<void> {
   const env = getEnv();
   const log = getLogger();
   const factory = new ProviderFactory(env);
@@ -23,9 +24,33 @@ function main(): void {
     );
   }
 
-  const server = createApp({ env, factory }).listen(env.PORT, env.HOST, () => {
+  // A MONGODB_URI that is set but unreachable stops startup: silently
+  // falling back to memory would lose history without anyone noticing.
+  const persistence = await createPersistence(env).catch((error: unknown) => {
+    throw new Error(
+      `Could not connect to MongoDB (MONGODB_URI): ${error instanceof Error ? error.message : String(error)}
+` +
+        'Check the URI and credentials, and for Atlas that this machine is on the Network Access list. ' +
+        'Unset MONGODB_URI to run without persistence.',
+    );
+  });
+
+  const server = createApp({
+    env,
+    factory,
+    store: persistence.store,
+    history: persistence.history,
+    persistence: persistence.status,
+  }).listen(env.PORT, env.HOST, () => {
     log.info(
-      { url: `http://${env.HOST}:${env.PORT}`, provider: env.AI_PROVIDER, configured },
+      {
+        url: `http://${env.HOST}:${env.PORT}`,
+        provider: env.AI_PROVIDER,
+        configured,
+        cache: persistence.status.cache,
+        history: persistence.status.history,
+        database: persistence.database?.db.databaseName,
+      },
       'Backend listening',
     );
   });
@@ -34,7 +59,10 @@ function main(): void {
     log.info({ signal }, 'Shutting down');
     server.close((error) => {
       if (error) log.error({ err: error }, 'Error while closing the server');
-      process.exit(error ? 1 : 0);
+      persistence
+        .close()
+        .catch((closeError: unknown) => log.error({ err: closeError }, 'Error closing MongoDB'))
+        .finally(() => process.exit(error ? 1 : 0));
     });
     // Do not let a hung connection block the exit indefinitely.
     setTimeout(() => process.exit(1), 10_000).unref();
@@ -44,10 +72,8 @@ function main(): void {
   process.on('SIGTERM', () => shutdown('SIGTERM'));
 }
 
-try {
-  main();
-} catch (error) {
+main().catch((error: unknown) => {
   // Configuration errors happen before the logger exists.
   console.error(error instanceof Error ? error.message : error);
   process.exit(1);
-}
+});

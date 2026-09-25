@@ -1,8 +1,26 @@
 import { useCallback, useEffect, useState } from 'react';
 import { formatDuration } from '../../shared/constants';
-import type { ActivityEntry, ActivityStats, ExtensionSettings, RuntimeStatus } from '../../shared/types';
-import { formatRelative, formatTime, getLog, getStats, getStatus, send } from '../api';
+import type {
+  ActivityEntry,
+  ActivityStats,
+  ExtensionSettings,
+  RuntimeStatus,
+  ServerPersistence,
+} from '../../shared/types';
+import {
+  SERVER_HISTORY_OFF,
+  formatRelative,
+  formatTime,
+  fromServerEntry,
+  getLog,
+  getServerHistory,
+  getServerStats,
+  getStats,
+  getStatus,
+  send,
+} from '../api';
 import { OutcomeBadge } from '../components/OutcomeBadge';
+import { SourceSwitch, useHistorySource } from '../components/SourceSwitch';
 
 interface MonitorTabProps {
   settings: ExtensionSettings;
@@ -11,7 +29,42 @@ interface MonitorTabProps {
 interface Health {
   activeProvider: string;
   providers: string[];
+  persistence?: ServerPersistence;
   error?: string;
+}
+
+/** The numbers the metric row shows, whichever source they came from. */
+interface Summary {
+  today: number;
+  total: number;
+  cached: number;
+  /** Local: errors. Server: average latency, since it records no errors. */
+  fourth: { value: string; label: string; bad: boolean };
+  lastAt: number | null;
+  byOrigin: Array<{ origin: string; count: number }>;
+}
+
+/**
+ * Local state is cheap to poll. The server is not: each poll is two requests
+ * against the backend's rate limit, which answering shares.
+ */
+const POLL_MS = { local: 4_000, server: 30_000 } as const;
+
+const DATABASE_COPY: Record<ServerPersistence['database'], string> = {
+  connected: 'MongoDB connected',
+  unreachable: 'MongoDB unreachable',
+  not_configured: 'no database (in memory)',
+};
+
+function fromLocal(stats: ActivityStats): Summary {
+  return {
+    today: stats.today,
+    total: stats.total,
+    cached: stats.cached,
+    fourth: { value: String(stats.errors), label: 'errors', bad: stats.errors > 0 },
+    lastAt: stats.lastAt,
+    byOrigin: stats.byOrigin,
+  };
 }
 
 const STATUS_COPY: Record<RuntimeStatus['status'], { label: string; tone: string; detail: string }> = {
@@ -24,30 +77,81 @@ const STATUS_COPY: Record<RuntimeStatus['status'], { label: string; tone: string
 /** Live view: what the extension is doing right now, and what it just did. */
 export function MonitorTab({ settings }: MonitorTabProps) {
   const [status, setStatus] = useState<RuntimeStatus | null>(null);
-  const [stats, setStats] = useState<ActivityStats | null>(null);
+  const [source, setSource] = useHistorySource();
+  const [summary, setSummary] = useState<Summary | null>(null);
   const [recent, setRecent] = useState<ActivityEntry[]>([]);
+  const [serverError, setServerError] = useState<string | null>(null);
+  const [serverOff, setServerOff] = useState(false);
   const [health, setHealth] = useState<Health | null>(null);
   const [checking, setChecking] = useState(false);
 
-  const refresh = useCallback(async () => {
-    const [nextStatus, nextStats, entries] = await Promise.all([getStatus(), getStats(), getLog(8)]);
-    setStatus(nextStatus);
-    setStats(nextStats);
-    setRecent(entries);
+  const refreshStatus = useCallback(async () => {
+    setStatus(await getStatus());
   }, []);
 
+  const refreshActivity = useCallback(async () => {
+    if (source === 'local') {
+      const [nextStats, entries] = await Promise.all([getStats(), getLog(8)]);
+      setSummary(nextStats ? fromLocal(nextStats) : null);
+      setRecent(entries);
+      setServerError(null);
+      setServerOff(false);
+      return;
+    }
+
+    const [statsResult, historyResult] = await Promise.all([
+      getServerStats(),
+      getServerHistory({ limit: 8 }),
+    ]);
+    if (!statsResult.ok || !historyResult.ok) {
+      setServerError(!statsResult.ok ? statsResult.error : !historyResult.ok ? historyResult.error : null);
+      setSummary(null);
+      setRecent([]);
+      return;
+    }
+    const stats = statsResult.value;
+    const entries = historyResult.value.entries.map(fromServerEntry);
+    setServerError(null);
+    setServerOff(!stats.enabled);
+    setRecent(entries);
+    setSummary({
+      today: stats.today,
+      total: stats.total,
+      cached: stats.cached,
+      fourth: {
+        value: stats.total ? `${stats.averageLatencyMs} ms` : '—',
+        label: 'average response',
+        bad: false,
+      },
+      lastAt: entries[0]?.at ?? null,
+      byOrigin: stats.topOrigins,
+    });
+  }, [source]);
+
+  // The run state is always local and always live.
   useEffect(() => {
-    void refresh();
-    const timer = setInterval(() => void refresh(), 4000);
+    void refreshStatus();
+    const timer = setInterval(() => void refreshStatus(), POLL_MS.local);
     return () => clearInterval(timer);
-  }, [refresh]);
+  }, [refreshStatus]);
+
+  useEffect(() => {
+    setSummary(null);
+    void refreshActivity();
+    const timer = setInterval(() => void refreshActivity(), POLL_MS[source]);
+    return () => clearInterval(timer);
+  }, [refreshActivity, source]);
 
   const checkBackend = async () => {
     setChecking(true);
     try {
       const response = await send({ kind: 'backend:health' });
       if (response.ok && response.kind === 'health') {
-        setHealth({ activeProvider: response.activeProvider, providers: response.providers });
+        setHealth({
+          activeProvider: response.activeProvider,
+          providers: response.providers,
+          persistence: response.persistence,
+        });
       } else if (!response.ok) {
         setHealth({ activeProvider: '', providers: [], error: response.error });
       }
@@ -62,7 +166,7 @@ export function MonitorTab({ settings }: MonitorTabProps) {
     if (response.ok && response.kind === 'run') setStatus(response.status);
   };
 
-  if (!status || !stats) return <p className="muted">Loading…</p>;
+  if (!status) return <p className="muted">Loading…</p>;
 
   const copy = STATUS_COPY[status.status];
 
@@ -84,28 +188,46 @@ export function MonitorTab({ settings }: MonitorTabProps) {
         </button>
       </section>
 
-      <section className="metrics">
-        <div className="metric">
-          <strong>{stats.today}</strong>
-          <span>answered today</span>
+      <section className="card">
+        <div className="card-head">
+          <h2>Activity</h2>
+          <SourceSwitch source={source} onChange={setSource} />
         </div>
-        <div className="metric">
-          <strong>{stats.total}</strong>
-          <span>answered in total</span>
-        </div>
-        <div className="metric">
-          <strong>{stats.cached}</strong>
-          <span>served from cache</span>
-        </div>
-        <div className={`metric ${stats.errors > 0 ? 'metric-bad' : ''}`}>
-          <strong>{stats.errors}</strong>
-          <span>errors</span>
-        </div>
-        <div className="metric">
-          <strong>{formatRelative(stats.lastAt)}</strong>
-          <span>last activity</span>
-        </div>
+        <p className="muted">
+          {source === 'server'
+            ? "From the backend's history: every question it answered, from any browser using it. Refreshes every 30 seconds."
+            : "From this browser's activity log, including what happened on the page."}
+        </p>
+        {serverError ? <p className="status error">{serverError}</p> : null}
+        {serverOff ? <p className="notice">{SERVER_HISTORY_OFF}</p> : null}
       </section>
+
+      {summary ? (
+        <section className="metrics">
+          <div className="metric">
+            <strong>{summary.today}</strong>
+            <span>answered today</span>
+          </div>
+          <div className="metric">
+            <strong>{summary.total}</strong>
+            <span>answered in total</span>
+          </div>
+          <div className="metric">
+            <strong>{summary.cached}</strong>
+            <span>served from cache</span>
+          </div>
+          <div className={`metric ${summary.fourth.bad ? 'metric-bad' : ''}`}>
+            <strong>{summary.fourth.value}</strong>
+            <span>{summary.fourth.label}</span>
+          </div>
+          <div className="metric">
+            <strong>{formatRelative(summary.lastAt)}</strong>
+            <span>last activity</span>
+          </div>
+        </section>
+      ) : !serverError ? (
+        <p className="muted">Loading…</p>
+      ) : null}
 
       <section className="card">
         <div className="card-head">
@@ -129,6 +251,11 @@ export function MonitorTab({ settings }: MonitorTabProps) {
           <p className="status ok">
             Reachable. Active provider: {health.activeProvider}. Credentials present for:{' '}
             {health.providers.length ? health.providers.join(', ') : 'none'}.
+            {health.persistence
+              ? ` Storage: ${DATABASE_COPY[health.persistence.database]}, cache in ${health.persistence.cache}, history ${
+                  health.persistence.history ? 'on' : 'off'
+                }.`
+              : ''}
           </p>
         ) : null}
       </section>
@@ -139,7 +266,9 @@ export function MonitorTab({ settings }: MonitorTabProps) {
         </div>
         {recent.length === 0 ? (
           <p className="muted">
-            Nothing yet. Open a page with questions on a site you have enabled.
+            {source === 'server'
+              ? 'Nothing on the server yet.'
+              : 'Nothing yet. Open a page with questions on a site you have enabled.'}
           </p>
         ) : (
           <ul className="feed">
@@ -162,19 +291,19 @@ export function MonitorTab({ settings }: MonitorTabProps) {
         )}
       </section>
 
-      {stats.byOrigin.length > 0 ? (
+      {summary && summary.byOrigin.length > 0 ? (
         <section className="card">
           <div className="card-head">
             <h2>Busiest sites</h2>
           </div>
           <ul className="bars">
-            {stats.byOrigin.map((row) => (
+            {summary.byOrigin.map((row) => (
               <li key={row.origin}>
                 <span className="bar-label">{row.origin || 'unknown'}</span>
                 <span className="bar-track" aria-hidden="true">
                   <span
                     className="bar-fill"
-                    style={{ width: `${(row.count / stats.byOrigin[0]!.count) * 100}%` }}
+                    style={{ width: `${(row.count / summary.byOrigin[0]!.count) * 100}%` }}
                   />
                 </span>
                 <span className="bar-value">{row.count}</span>
