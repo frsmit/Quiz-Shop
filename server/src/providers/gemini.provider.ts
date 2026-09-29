@@ -5,9 +5,16 @@
  * Its schema dialect is a subset of JSON Schema, so the shared schema is
  * passed without `additionalProperties`, which it does not accept.
  */
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import type { AIProvider, ProviderContext } from './ai-provider.interface.js';
-import { ProviderError, codeForStatus, isAbort, messageOf, statusOf } from './provider.errors.js';
+import {
+  ProviderError,
+  codeForStatus,
+  isAbort,
+  messageOf,
+  retryAfterOf,
+  statusOf,
+} from './provider.errors.js';
 import { parseAnswerText, withDeadline } from './provider.utils.js';
 import { ANSWER_JSON_SCHEMA } from '../question/question.schema.js';
 import type { QuestionAnswer, QuestionRequest } from '../question/question.schema.js';
@@ -32,15 +39,29 @@ export const GEMINI_DEFAULT_MODEL = 'gemini-3.5-flash';
 
 const { additionalProperties: _ignored, ...GEMINI_SCHEMA } = ANSWER_JSON_SCHEMA;
 
+export interface GeminiOptions {
+  /** See GEMINI_THINKING_LEVEL. */
+  thinkingLevel?: 'minimal' | 'low' | 'medium' | 'high';
+}
+
+const THINKING_LEVELS: Record<NonNullable<GeminiOptions['thinkingLevel']>, ThinkingLevel> = {
+  minimal: ThinkingLevel.MINIMAL,
+  low: ThinkingLevel.LOW,
+  medium: ThinkingLevel.MEDIUM,
+  high: ThinkingLevel.HIGH,
+};
+
 export class GeminiProvider implements AIProvider {
   private readonly client: GoogleGenAI;
   private readonly model: string;
   private readonly timeoutMs: number;
+  private readonly thinkingLevel: ThinkingLevel;
 
-  constructor(apiKey: string, context: ProviderContext) {
+  constructor(apiKey: string, context: ProviderContext, options: GeminiOptions = {}) {
     this.client = new GoogleGenAI({ apiKey });
     this.model = context.model?.trim() || GEMINI_DEFAULT_MODEL;
     this.timeoutMs = context.timeoutMs;
+    this.thinkingLevel = THINKING_LEVELS[options.thinkingLevel ?? 'low'];
   }
 
   getName(): string {
@@ -62,6 +83,9 @@ export class GeminiProvider implements AIProvider {
           systemInstruction: SYSTEM_PROMPT,
           responseMimeType: 'application/json',
           responseJsonSchema: GEMINI_SCHEMA,
+          // `thinkingLevel`, not `thinkingBudget`: the SDK documents the
+          // budget as rejected from Gemini 3.5 on.
+          thinkingConfig: { thinkingLevel: this.thinkingLevel },
           abortSignal: deadline.signal,
         },
       });
@@ -88,12 +112,24 @@ export class GeminiProvider implements AIProvider {
     }
 
     const status = statusOf(error);
+    if (status === 429) {
+      // Google's message is a page of JSON; the useful part is the wait.
+      const retryAfterMs = retryAfterOf(error);
+      return new ProviderError(
+        'rate_limited',
+        this.getName(),
+        retryAfterMs === undefined
+          ? 'Gemini rate limit reached (the free tier allows 15 requests a minute).'
+          : `Gemini rate limit reached (the free tier allows 15 requests a minute); retry in ${Math.ceil(retryAfterMs / 1000)}s.`,
+        { cause: error, retryAfterMs },
+      );
+    }
     if (status !== undefined) {
       return new ProviderError(
         codeForStatus(status),
         this.getName(),
         messageOf(error, 'Gemini rejected the request.'),
-        { cause: error },
+        { cause: error, retryAfterMs: retryAfterOf(error) },
       );
     }
 

@@ -222,6 +222,33 @@ describe('content script → service worker → backend → content script', () 
     expect(b).toMatchObject({ ok: true, answer: ANSWER });
   });
 
+  it("passes a provider rate limit's wait back to the content script", async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify({
+              error: { code: 'rate_limited', message: 'Gemini rate limit reached; retry in 23s.', retryAfterMs: 23_000 },
+            }),
+            { status: 429, headers: { 'content-type': 'application/json', 'retry-after': '23' } },
+          ),
+        ),
+      ),
+    );
+
+    const response = await send(
+      {
+        kind: 'question:detected',
+        fingerprint: 'rate-limited-question',
+        request: { question: 'Which gas do plants absorb from the air?', type: 'short_answer' },
+      },
+      FROM_TAB,
+    );
+
+    expect(response).toMatchObject({ ok: false, code: 'rate_limited', retryAfterMs: 23_000 });
+  });
+
   it('passes a backend failure back to the content script as a code', async () => {
     vi.stubGlobal(
       'fetch',

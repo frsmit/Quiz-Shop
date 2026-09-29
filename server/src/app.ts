@@ -53,6 +53,7 @@ export function createApp(dependencies: AppDependencies = {}): Express {
   const service = new QuestionService(factory, store, {
     maxAttempts: env.PROVIDER_MAX_ATTEMPTS,
     baseRetryDelayMs: env.PROVIDER_RETRY_BASE_MS,
+    budgetMs: env.PROVIDER_TIMEOUT_MS,
     history,
   });
   const app = express();

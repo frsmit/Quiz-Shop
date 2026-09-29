@@ -8,7 +8,7 @@
  * site's own validation or controls.
  */
 import type { QuestionAnswer } from '../shared/types';
-import { canonicalize } from './normalize';
+import { canonicalize, stripOptionPrefix } from './normalize';
 import { OPTION_CONTROL_SELECTOR, TEXT_CONTROL_SELECTOR, isIgnorable, labelFor } from './extractor';
 
 export type FillOutcome = 'filled' | 'no-control' | 'no-match';
@@ -64,6 +64,15 @@ export function matchOption(optionLabels: readonly string[], answer: string): nu
 
   const exact = canonical.indexOf(target);
   if (exact !== -1) return exact;
+
+  // `B. on` for the option `on`: models copy the label the prompt put on the
+  // option. The text after the label is what they wrote out, so it is matched
+  // before the letter itself is trusted.
+  const unlabelled = canonicalize(stripOptionPrefix(answer));
+  if (unlabelled && unlabelled !== target) {
+    const index = canonical.indexOf(unlabelled);
+    if (index !== -1) return index;
+  }
 
   const letter = LETTER_ANSWER.exec(answer.trim());
   if (letter?.[1]) {

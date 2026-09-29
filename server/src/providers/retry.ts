@@ -48,12 +48,18 @@ export async function withRetry<T>(
       const hasAttemptsLeft = attempt < attempts;
       if (!retryable || !hasAttemptsLeft || options.signal?.aborted) throw error;
 
-      // A timeout has already consumed its full budget; trying again would
-      // just spend it twice over.
-      if (error.code === 'timeout') throw error;
+      // A stalled call is retried like any other transient fault: the budget
+      // for the whole question is the caller's signal, checked above, so a
+      // timeout that used all of it has already stopped here.
 
-      const delay = jitter(
-        Math.min(options.baseDelayMs * 2 ** (attempt - 1), options.maxDelayMs),
+      // A rate limit that names its wait: honour it, and if it is longer than
+      // any wait we would make, hand it back to the caller now rather than
+      // spending the question's budget (and more of the quota) waiting here.
+      if (error.retryAfterMs !== undefined && error.retryAfterMs > options.maxDelayMs) throw error;
+
+      const delay = Math.max(
+        jitter(Math.min(options.baseDelayMs * 2 ** (attempt - 1), options.maxDelayMs)),
+        error.retryAfterMs ?? 0,
       );
       options.onRetry?.(attempt, delay, error);
       await sleep(delay);

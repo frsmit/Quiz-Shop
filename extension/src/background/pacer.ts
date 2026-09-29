@@ -10,6 +10,8 @@ export interface Pacer {
   take: (delayMs: number) => Promise<void>;
   /** When the next turn becomes available, for the popup countdown. */
   nextAvailableAt: () => number;
+  /** Push the next turn back by at least `ms` from now (a provider rate limit). */
+  defer: (ms: number) => void;
   reset: () => void;
 }
 
@@ -39,6 +41,10 @@ export function createPacer(
 
     nextAvailableAt() {
       return nextAt;
+    },
+
+    defer(ms) {
+      nextAt = Math.max(nextAt, now() + ms);
     },
 
     reset() {

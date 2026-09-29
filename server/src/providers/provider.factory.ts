@@ -48,7 +48,10 @@ const REGISTRY: Record<ProviderId, Registration> = {
     defaultModel: (env) => env.AI_MODEL ?? GEMINI_DEFAULT_MODEL,
     isConfigured: (env) => Boolean(env.GEMINI_API_KEY),
     requirement: 'GEMINI_API_KEY',
-    build: (env, context) => new GeminiProvider(env.GEMINI_API_KEY as string, context),
+    build: (env, context) =>
+      new GeminiProvider(env.GEMINI_API_KEY as string, context, {
+        thinkingLevel: env.GEMINI_THINKING_LEVEL,
+      }),
   },
 
   anthropic: {
@@ -111,7 +114,11 @@ export class ProviderFactory implements ProviderRegistry {
 
     return registration.build(this.env, {
       model: model ?? this.env.AI_MODEL,
-      timeoutMs: this.env.PROVIDER_TIMEOUT_MS,
+      // Per call; the service enforces PROVIDER_TIMEOUT_MS across retries.
+      timeoutMs: Math.min(
+        this.env.PROVIDER_ATTEMPT_TIMEOUT_MS ?? this.env.PROVIDER_TIMEOUT_MS,
+        this.env.PROVIDER_TIMEOUT_MS,
+      ),
     });
   }
 

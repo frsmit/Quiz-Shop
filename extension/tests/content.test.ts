@@ -92,6 +92,17 @@ describe('maths extraction', () => {
 describe('matchOption', () => {
   const options = ['O(n)', 'O(log n)', 'O(n log n)', 'O(1)'];
 
+  it('matches an answer that carries the option label, as Gemini returns it', () => {
+    const prepositions = ['in', 'on', 'onto', 'into'];
+    expect(matchOption(prepositions, 'B. on')).toBe(1);
+    expect(matchOption(prepositions, '(d) into')).toBe(3);
+    expect(matchOption(prepositions, 'C) onto')).toBe(2);
+  });
+
+  it('trusts the written-out text over a label that disagrees with it', () => {
+    expect(matchOption(['in', 'on', 'onto', 'into'], 'C. on')).toBe(1);
+  });
+
   it('matches the exact option text', () => {
     expect(matchOption(options, 'O(log n)')).toBe(1);
   });

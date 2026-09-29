@@ -49,12 +49,16 @@ export const errorHandler: ErrorRequestHandler = (error, _req, res, _next) => {
       { provider: error.provider, code: error.code, status: error.status },
       'Provider request failed',
     );
+    if (error.retryAfterMs !== undefined) {
+      res.set('Retry-After', String(Math.ceil(error.retryAfterMs / 1000)));
+    }
     res.status(error.status).json({
       error: {
         code: error.code,
         message: error.message,
         provider: error.provider,
         retryable: error.retryable,
+        ...(error.retryAfterMs !== undefined ? { retryAfterMs: error.retryAfterMs } : {}),
       },
     });
     return;

@@ -21,10 +21,11 @@ import {
   extractOptions,
   extractSelectOptions,
   isIgnorable,
+  isRendered,
+  labelsOf,
   visibleText,
 } from './extractor';
 import {
-  escapeAttributeValue,
   fingerprint,
   looksLikeQuestion,
   stripOptionPrefix,
@@ -46,8 +47,9 @@ const MAX_ASCENT = 6;
 /** Matches a text line that is itself a lettered or numbered option. */
 const OPTION_LINE = /^\s*\(?\s*(?:[a-z]|[ivx]{1,4}|\d{1,2})\s*[).:\]]\s+\S/i;
 
-/** Matches a leading "Question 7" / "Q3." / "12)" numbering label. */
-const QUESTION_LABEL = /^(?:question|q(?:uestion)?\s*no\.?|q)?\s*\d{1,3}\s*[.):\-]?\s+/i;
+/** Matches a leading "Question 7" / "Q3." / "12)" / "Question 1 of 40:" label. */
+const QUESTION_LABEL =
+  /^(?:question|q(?:uestion)?\s*no\.?|q)?\s*\d{1,3}(?:\s*(?:of|\/)\s*\d{1,4})?\s*[.):\-]?\s+/i;
 
 type Candidate = {
   container: HTMLElement;
@@ -63,11 +65,20 @@ type Candidate = {
  * The result is de-duplicated by fingerprint and ordered by document position.
  */
 export function detectQuestions(root: ParentNode, options: DetectOptions): DetectedQuestion[] {
-  const candidates = [...collectControlCandidates(root), ...collectTextOnlyCandidates(root)];
+  const controlCandidates = collectControlCandidates(root);
+  // A prompt inside a question already found through its controls is that
+  // question again, minus its options - one more request with nothing to fill.
+  const textOnly = collectTextOnlyCandidates(root).filter(
+    (candidate) => !controlCandidates.some(({ container }) => container.contains(candidate.container)),
+  );
+  const candidates = [...controlCandidates, ...textOnly];
   const detected: DetectedQuestion[] = [];
   const seen = new Set<string>();
 
   for (const candidate of candidates) {
+    // Last, and once per candidate: the stylesheet-aware visibility check is
+    // the one step here that forces style resolution.
+    if (!isRendered(candidate.container)) continue;
     const question = buildQuestion(candidate, options);
     if (!question) continue;
     if (seen.has(question.fingerprint)) continue;
@@ -86,7 +97,7 @@ function collectControlCandidates(root: ParentNode): Candidate[] {
   // Radio and checkbox groups, keyed by `name` where the page provides one.
   const groups = new Map<string, HTMLInputElement[]>();
   for (const control of queryAll<HTMLInputElement>(root, OPTION_CONTROL_SELECTOR)) {
-    if (isIgnorable(control)) continue;
+    if (isIgnorable(control) || !controlShown(control)) continue;
     const key = control.name
       ? `name:${control.name}`
       : `dom:${indexOfElement(control.parentElement ?? control)}`;
@@ -107,7 +118,7 @@ function collectControlCandidates(root: ParentNode): Candidate[] {
 
   // Dropdown questions.
   for (const select of queryAll<HTMLSelectElement>(root, 'select')) {
-    if (isIgnorable(select) || select.options.length < 2) continue;
+    if (isIgnorable(select) || !controlShown(select) || select.options.length < 2) continue;
     const container = ascendToPrompt(select.parentElement ?? select, [select]);
     if (!container || claimed.has(container)) continue;
     claimed.add(container);
@@ -116,7 +127,7 @@ function collectControlCandidates(root: ParentNode): Candidate[] {
 
   // Free-text questions.
   for (const control of queryAll<HTMLElement>(root, TEXT_CONTROL_SELECTOR)) {
-    if (isIgnorable(control)) continue;
+    if (isIgnorable(control) || !controlShown(control)) continue;
     if (control instanceof HTMLInputElement && control.type === 'hidden') continue;
     const container = ascendToPrompt(control.parentElement ?? control, [control]);
     if (!container || claimed.has(container)) continue;
@@ -178,15 +189,11 @@ function buildQuestion(candidate: Candidate, options: DetectOptions): DetectedQu
   const { container, optionControls, select, textControl, optionElements = [] } = candidate;
 
   const excluded: Element[] = [...optionControls, ...optionElements];
-  for (const control of optionControls) {
-    const label = control.closest('label') ?? labelElementFor(control);
-    if (label) excluded.push(label);
-  }
+  for (const control of optionControls) excluded.push(...labelsOf(control));
   if (select) excluded.push(select);
   if (textControl) {
     excluded.push(textControl);
-    const label = textControl.closest('label') ?? labelElementFor(textControl);
-    if (label) excluded.push(label);
+    excluded.push(...labelsOf(textControl));
   }
 
   const context = extractContext(container, options.maxContextLength);
@@ -195,7 +202,11 @@ function buildQuestion(candidate: Candidate, options: DetectOptions): DetectedQu
   // with context switched off they stay in the prompt so nothing is lost.
   const inlineMedia = context ? Array.from(container.querySelectorAll(INLINE_MEDIA_SELECTOR)) : [];
 
-  const questionText = extractQuestionText(container, [...excluded, ...inlineMedia]);
+  const questionText = extractQuestionText(
+    container,
+    [...excluded, ...inlineMedia],
+    optionControls.length >= 2 || Boolean(select),
+  );
   if (!questionText) return null;
 
   const optionList = select
@@ -232,13 +243,22 @@ function buildQuestion(candidate: Candidate, options: DetectOptions): DetectedQu
 }
 
 /** Prompt text of the container with option labels and controls removed. */
-function extractQuestionText(container: Element, excluded: readonly Element[]): string | null {
+/**
+ * `hasChoices`: the prompt comes with a real group of answer controls. Short
+ * stems like "FFC stands for" are then questions whatever their wording; the
+ * looks-like-a-question test is for prompts with nothing else to vouch for them.
+ */
+function extractQuestionText(
+  container: Element,
+  excluded: readonly Element[],
+  hasChoices = false,
+): string | null {
   const text = truncate(
     stripQuestionLabel(visibleText(container, excluded)),
     LIMITS.maxQuestionLength,
   );
   if (text.length < LIMITS.minQuestionLength) return null;
-  if (!looksLikeQuestion(text) && text.length < 25) return null;
+  if (!hasChoices && !looksLikeQuestion(text) && text.length < 25) return null;
   return text;
 }
 
@@ -265,10 +285,11 @@ function ascendToPrompt(start: Element, controls: readonly Element[]): HTMLEleme
       continue;
     }
 
-    const labels = controls.flatMap((control) => {
-      const label = control.closest('label');
-      return label ? [label] : [];
-    });
+    // Both label styles: wrapping (`<label><input> text</label>`) and linked
+    // (`<input id=x><label for=x>`). Missing the linked kind lets the option
+    // texts pass for a prompt, so the climb stops at the options box and the
+    // question is then discarded for having no text of its own (WatuPRO).
+    const labels = controls.flatMap((control) => labelsOf(control));
 
     const prompt = visibleText(node, [...controls, ...labels]);
     if (prompt.length >= LIMITS.minQuestionLength) return node;
@@ -283,6 +304,16 @@ function ascendToPrompt(start: Element, controls: readonly Element[]): HTMLEleme
   return node instanceof HTMLElement ? node : null;
 }
 
+/**
+ * Whether a control sits in a part of the page that is shown. Checked on its
+ * parent, not on the control: sites hide the real checkbox and draw a styled
+ * one, but a collapsed panel (IndiaBix's "Workspace" and "Report" textareas,
+ * hidden by Bootstrap's `.collapse`) hides the parent too.
+ */
+function controlShown(control: Element): boolean {
+  return isRendered(control.parentElement ?? control);
+}
+
 function lowestCommonAncestor(elements: readonly Element[]): Element | null {
   const [first, ...rest] = elements;
   if (!first) return null;
@@ -295,11 +326,6 @@ function lowestCommonAncestor(elements: readonly Element[]): Element | null {
   return null;
 }
 
-function labelElementFor(control: Element): Element | null {
-  const id = control.getAttribute('id');
-  if (!id) return null;
-  return control.ownerDocument.querySelector(`label[for="${escapeAttributeValue(id)}"]`);
-}
 
 /** Position among siblings, used to key control groups that lack a `name`. */
 function indexOfElement(element: Element): string {

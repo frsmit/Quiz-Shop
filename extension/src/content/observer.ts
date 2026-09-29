@@ -52,8 +52,20 @@ function isRelevantNode(node: Node): boolean {
   );
 }
 
+/**
+ * `style` and `class` change constantly (animations, hover states, progress
+ * bars), so those only count when they land on something holding answer
+ * controls - which is exactly how one-question-at-a-time quizzes reveal the
+ * next question.
+ */
+const PRESENTATION_ATTRIBUTES = new Set(['style', 'class']);
+
 function isRelevantMutation(mutation: MutationRecord): boolean {
-  if (mutation.type === 'attributes') return true;
+  if (mutation.type === 'attributes') {
+    if (!mutation.attributeName || !PRESENTATION_ATTRIBUTES.has(mutation.attributeName)) return true;
+    const target = mutation.target as Element;
+    return target.nodeType === ELEMENT_NODE && target.querySelector(RELEVANT_SELECTOR) !== null;
+  }
   if (mutation.type === 'characterData') return true;
   return (
     Array.from(mutation.addedNodes).some(isRelevantNode) ||
@@ -63,7 +75,7 @@ function isRelevantMutation(mutation: MutationRecord): boolean {
 
 export function createPageObserver(options: PageObserverOptions): PageObserver {
   const debounceMs = options.debounceMs ?? MUTATION_DEBOUNCE_MS;
-  const attributeFilter = options.attributeFilter ?? ['data-question', 'aria-hidden', 'hidden'];
+  const attributeFilter = options.attributeFilter ?? ['data-question', 'aria-hidden', 'hidden', 'style', 'class'];
 
   let timer: ReturnType<typeof setTimeout> | null = null;
   let observer: MutationObserver | null = null;

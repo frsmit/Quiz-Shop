@@ -20,6 +20,8 @@ export class BackendError extends Error {
   constructor(
     message: string,
     readonly code: WorkerErrorCode,
+    /** How long the backend asked us to wait (a provider rate limit). */
+    readonly retryAfterMs?: number,
   ) {
     super(message);
     this.name = 'BackendError';
@@ -40,7 +42,7 @@ interface ListEnvelope<T> {
 
 interface AnswerEnvelope {
   data?: QuestionAnswer;
-  error?: { message?: string; code?: string };
+  error?: { message?: string; code?: string; retryAfterMs?: number };
 }
 
 export async function requestAnswer(
@@ -147,16 +149,24 @@ async function call<T>(path: string, init: RequestInit, settings: ExtensionSetti
   const parsed = safeJsonParse(text);
 
   if (!response.ok) {
-    const message =
-      (parsed as AnswerEnvelope | null)?.error?.message ??
-      `Backend responded with ${response.status}.`;
-    throw new BackendError(message, mapStatus(response.status));
+    const error = (parsed as AnswerEnvelope | null)?.error;
+    const message = error?.message ?? `Backend responded with ${response.status}.`;
+    throw new BackendError(message, mapStatus(response.status), retryAfter(error?.retryAfterMs, response));
   }
 
   if (parsed === null) {
     throw new BackendError('The backend returned a response that was not JSON.', 'provider_error');
   }
   return parsed as T;
+}
+
+/** The wait the backend asked for: its JSON field, else the Retry-After header. */
+function retryAfter(fromBody: unknown, response: Response): number | undefined {
+  if (typeof fromBody === 'number' && Number.isFinite(fromBody) && fromBody >= 0) return fromBody;
+  const header = Number(response.headers.get('retry-after'));
+  return response.headers.has('retry-after') && Number.isFinite(header) && header >= 0
+    ? header * 1000
+    : undefined;
 }
 
 function mapStatus(status: number): WorkerErrorCode {

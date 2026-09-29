@@ -34,6 +34,15 @@ let settings: ExtensionSettings | null = null;
 let scanning = false;
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
 
+/**
+ * Failed attempts per question for faults that carry no retry time of their
+ * own (a timeout, the backend unreachable, rate limiting). Capped so a
+ * backend that stays down costs a few requests, not one every few seconds.
+ */
+const failures = new Map<string, number>();
+const MAX_ATTEMPTS = 3;
+const RETRY_BASE_MS = 5_000;
+
 async function send(message: ContentToWorkerMessage): Promise<WorkerResponse | null> {
   try {
     const response = (await chrome.runtime.sendMessage(envelope(message))) as unknown;
@@ -89,14 +98,30 @@ async function resolveQuestion(question: DetectedQuestion): Promise<void> {
     if (RETRYABLE_CODES.has(response.code)) {
       // Paused, warming up or a transient network fault: let a later scan
       // pick the question up again rather than losing it.
-      processed.delete(question.fingerprint);
-      if (typeof response.retryAfterMs === 'number') scheduleRetry(response.retryAfterMs);
+      if (typeof response.retryAfterMs === 'number') {
+        processed.delete(question.fingerprint);
+        scheduleRetry(response.retryAfterMs);
+      } else if (response.code === 'paused') {
+        // Resuming broadcasts `run:changed`, which rescans.
+        processed.delete(question.fingerprint);
+      } else {
+        // Nothing else will prompt a rescan - on a one-question page the DOM
+        // may never change again - so schedule one, backing off, and stop
+        // after a few attempts rather than retrying forever.
+        const attempts = (failures.get(question.fingerprint) ?? 0) + 1;
+        failures.set(question.fingerprint, attempts);
+        if (attempts < MAX_ATTEMPTS) {
+          processed.delete(question.fingerprint);
+          scheduleRetry(RETRY_BASE_MS * 2 ** (attempts - 1));
+        }
+      }
     }
     return;
   }
 
   if (response.kind !== 'answer') return;
 
+  failures.delete(question.fingerprint);
   answers.set(question.fingerprint, response.answer);
   fill(question, response.answer);
 }

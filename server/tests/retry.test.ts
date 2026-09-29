@@ -45,10 +45,50 @@ describe('withRetry', () => {
     expect(operation).toHaveBeenCalledTimes(1);
   });
 
-  it('does not retry a timeout, which has already spent its budget', async () => {
-    const operation = vi.fn(() => Promise.reject(new ProviderError('timeout', 'gemini', 'slow')));
+  it('retries a stalled call that timed out, and succeeds', async () => {
+    // Under a burst, some Gemini calls hang; sent again they answer at once.
+    const operation = vi
+      .fn<() => Promise<string>>()
+      .mockRejectedValueOnce(new ProviderError('timeout', 'gemini', 'stalled'))
+      .mockResolvedValue('ok');
 
-    await expect(withRetry(operation, options())).rejects.toMatchObject({ code: 'timeout' });
+    await expect(withRetry(operation, options())).resolves.toBe('ok');
+    expect(operation).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not retry a timeout once the question budget is spent', async () => {
+    const budget = new AbortController();
+    const operation = vi.fn(() => {
+      budget.abort(); // the budget ran out during this call
+      return Promise.reject(new ProviderError('timeout', 'gemini', 'slow'));
+    });
+
+    await expect(withRetry(operation, options({ signal: budget.signal }))).rejects.toMatchObject({
+      code: 'timeout',
+    });
+    expect(operation).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits as long as a rate limit asks, when that is short', async () => {
+    const delays: number[] = [];
+    const operation = vi
+      .fn<() => Promise<string>>()
+      .mockRejectedValueOnce(new ProviderError('rate_limited', 'gemini', '429', { retryAfterMs: 3_000 }))
+      .mockResolvedValue('ok');
+
+    await withRetry(operation, options({ maxDelayMs: 8_000, sleep: (ms: number) => (delays.push(ms), Promise.resolve()) }));
+    expect(delays).toEqual([3_000]);
+  });
+
+  it('hands a long rate-limit wait straight back instead of spending quota on it', async () => {
+    const operation = vi.fn(() =>
+      Promise.reject(new ProviderError('rate_limited', 'gemini', '429', { retryAfterMs: 23_000 })),
+    );
+
+    await expect(withRetry(operation, options({ maxDelayMs: 8_000 }))).rejects.toMatchObject({
+      code: 'rate_limited',
+      retryAfterMs: 23_000,
+    });
     expect(operation).toHaveBeenCalledTimes(1);
   });
 

@@ -295,6 +295,11 @@ async function answerQuestion(payload: Record<string, unknown>): Promise<WorkerR
       return { ok: true, kind: 'answer', answer, cached: false };
     } catch (error) {
       const response = toFailure(error);
+      // Everything queued behind this question would hit the same limit, so
+      // hold the whole queue back for as long as the provider asked.
+      if (!response.ok && response.code === 'rate_limited' && response.retryAfterMs !== undefined) {
+        pacer.defer(response.retryAfterMs);
+      }
       await record(request, settings, {
         fingerprint,
         answer: '',
@@ -504,7 +509,14 @@ function originOf(url: string): string {
 }
 
 function toFailure(error: unknown): WorkerResponse {
-  if (error instanceof BackendError) return failure(error.message, error.code);
+  if (error instanceof BackendError) {
+    const response = failure(error.message, error.code);
+    // A named wait (a provider rate limit) goes back to the content script,
+    // which retries the question exactly then instead of guessing.
+    return error.retryAfterMs !== undefined && !response.ok
+      ? { ...response, retryAfterMs: error.retryAfterMs }
+      : response;
+  }
   return failure(error instanceof Error ? error.message : 'Unexpected error.', 'unknown');
 }
 

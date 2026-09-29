@@ -96,6 +96,23 @@ describe('pacer', () => {
     expect(waits).toHaveLength(2); // the first caller never waits
   });
 
+  it('holds the next turn back when a provider asks for a wait', async () => {
+    const pacer = createPacer(() => now, sleep);
+    await pacer.take(1200);
+
+    pacer.defer(23_000);
+    await pacer.take(1200);
+
+    expect(waits).toEqual([23_000]);
+  });
+
+  it('never brings a turn forward', () => {
+    const pacer = createPacer(() => now, sleep);
+    void pacer.take(60_000);
+    pacer.defer(1_000);
+    expect(pacer.nextAvailableAt()).toBe(1_000 + 60_000);
+  });
+
   it('does not wait when the delay is zero', async () => {
     const pacer = createPacer(() => now, sleep);
     await pacer.take(0);

@@ -37,6 +37,15 @@ const envSchema = z.object({
 
   OPENAI_API_KEY: z.string().optional(),
   GEMINI_API_KEY: z.string().optional(),
+  /**
+   * How long Gemini 3.x reasons before answering. Its default reasons at
+   * length even for a one-word answer (24-30s+ per question), which outlasts
+   * the extension's request timeout; LOW answers the same questions in a
+   * few seconds.
+   */
+  GEMINI_THINKING_LEVEL: z
+    .enum(['minimal', 'low', 'medium', 'high'])
+    .default('low'),
   ANTHROPIC_API_KEY: z.string().optional(),
 
   /** Credentials for any OpenAI-compatible endpoint. */
@@ -57,8 +66,15 @@ const envSchema = z.object({
   RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60_000),
   RATE_LIMIT_MAX: z.coerce.number().int().positive().default(30),
 
-  /** Upper bound on a single provider call. */
+  /** Upper bound on answering one question, retries included. */
   PROVIDER_TIMEOUT_MS: z.coerce.number().int().positive().default(45_000),
+  /**
+   * Upper bound on one provider call. A call past it counts as stalled and is
+   * retried while PROVIDER_TIMEOUT_MS has time left - under a burst, free
+   * tiers leave some calls hanging that answer at once when sent again.
+   * Unset means a single call may use the whole budget, and is not retried.
+   */
+  PROVIDER_ATTEMPT_TIMEOUT_MS: z.coerce.number().int().positive().optional(),
   /** Attempts per question, including the first. Only retryable failures
    *  (429, 503, connection resets) are retried - free tiers return these
    *  routinely and one of them should not become a failed answer. */

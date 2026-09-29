@@ -39,12 +39,14 @@ export class ProviderError extends Error {
   readonly provider: string;
   readonly status: number;
   readonly retryable: boolean;
+  /** How long the provider asked us to wait before trying again, when it said. */
+  readonly retryAfterMs: number | undefined;
 
   constructor(
     code: ProviderErrorCode,
     provider: string,
     message: string,
-    options?: { cause?: unknown },
+    options?: { cause?: unknown; retryAfterMs?: number | undefined },
   ) {
     super(message, options);
     this.name = 'ProviderError';
@@ -52,7 +54,35 @@ export class ProviderError extends Error {
     this.provider = provider;
     this.status = STATUS_BY_CODE[code];
     this.retryable = RETRYABLE.has(code);
+    this.retryAfterMs = options?.retryAfterMs;
   }
+}
+
+/**
+ * The wait a provider asked for on a rate limit, from whichever form it used:
+ * a `Retry-After` header (OpenAI, Anthropic) or Google's RetryInfo, which the
+ * Gemini SDK only surfaces inside the message text ("retryDelay":"23s",
+ * "Please retry in 23.2s").
+ */
+export function retryAfterOf(error: unknown): number | undefined {
+  if (typeof error !== 'object' || error === null) return undefined;
+
+  const headers = (error as { headers?: unknown }).headers;
+  const header =
+    headers && typeof (headers as Headers).get === 'function'
+      ? (headers as Headers).get('retry-after')
+      : (headers as Record<string, unknown> | undefined)?.['retry-after'];
+  const seconds = Number(header);
+  if (header !== undefined && header !== null && Number.isFinite(seconds) && seconds >= 0) {
+    return Math.round(seconds * 1000);
+  }
+
+  const text = error instanceof Error ? error.message : '';
+  // The structured RetryInfo field first; the sentence is the fallback.
+  const value =
+    /"retryDelay"\s*:\s*"(\d+(?:\.\d+)?)s"/.exec(text)?.[1] ??
+    /retry in (\d+(?:\.\d+)?)\s*s/i.exec(text)?.[1];
+  return value === undefined ? undefined : Math.ceil(Number(value) * 1000);
 }
 
 /**

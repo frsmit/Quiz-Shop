@@ -214,6 +214,73 @@ describe('content script', () => {
     expect(attempt).toBe(2);
   });
 
+  it('retries a timed-out question by itself, with nothing changing on the page', async () => {
+    // A one-question-per-page quiz: once the question is on screen, the DOM
+    // may never change again, so no mutation would ever prompt a rescan.
+    settings = { ...DEFAULT_SETTINGS, autoFill: true };
+    let attempt = 0;
+    respond = (message) => {
+      if (message.kind === 'settings:get') return { ok: true, kind: 'settings', settings };
+      if (message.kind !== 'question:detected') return { ok: true, kind: 'ack' };
+      attempt += 1;
+      if (attempt === 1) return { ok: false, code: 'timeout', error: 'The backend did not respond in time.' };
+      return { ok: true, kind: 'answer', answer: ANSWER, cached: false };
+    };
+
+    await import('../src/content/content');
+    await boot();
+    expect(attempt).toBe(1);
+
+    vi.advanceTimersByTime(5_000);
+    await boot();
+
+    expect(attempt).toBe(2);
+    expect(document.querySelector<HTMLInputElement>('input[value="b"]')?.checked).toBe(true);
+  });
+
+  it('retries a rate-limited question when the provider said to, not before', async () => {
+    settings = { ...DEFAULT_SETTINGS, autoFill: true };
+    let attempt = 0;
+    respond = (message) => {
+      if (message.kind === 'settings:get') return { ok: true, kind: 'settings', settings };
+      if (message.kind !== 'question:detected') return { ok: true, kind: 'ack' };
+      attempt += 1;
+      if (attempt === 1) {
+        return { ok: false, code: 'rate_limited', error: 'retry in 23s', retryAfterMs: 23_000 };
+      }
+      return { ok: true, kind: 'answer', answer: ANSWER, cached: false };
+    };
+
+    await import('../src/content/content');
+    await boot();
+    vi.advanceTimersByTime(15_000);
+    await boot();
+    expect(attempt).toBe(1); // still inside the provider's wait
+
+    vi.advanceTimersByTime(10_000);
+    await boot();
+    expect(attempt).toBe(2);
+    expect(document.querySelector<HTMLInputElement>('input[value="b"]')?.checked).toBe(true);
+  });
+
+  it('gives up after three attempts when the backend stays down', async () => {
+    let attempt = 0;
+    respond = (message) => {
+      if (message.kind === 'settings:get') return { ok: true, kind: 'settings', settings };
+      attempt += 1;
+      return { ok: false, code: 'timeout', error: 'The backend did not respond in time.' };
+    };
+
+    await import('../src/content/content');
+    await boot();
+    for (let i = 0; i < 10; i += 1) {
+      vi.advanceTimersByTime(60_000);
+      await boot();
+    }
+
+    expect(attempt).toBe(3);
+  });
+
   it('does not retry a question the backend rejected', async () => {
     let attempt = 0;
     respond = (message) => {
