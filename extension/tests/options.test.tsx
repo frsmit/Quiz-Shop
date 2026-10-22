@@ -291,6 +291,107 @@ describe('settings', () => {
     expect(document.body.textContent).not.toContain('super-secret');
   });
 
+  describe('own API key', () => {
+    const health = (configured: boolean, clientCredentials = true) => ({
+      ok: true,
+      kind: 'health',
+      activeProvider: 'openai',
+      providers: configured ? ['gemini'] : [],
+      clientCredentials,
+      allProviders: [
+        { id: 'openai', label: 'OpenAI', configured: false, defaultModel: 'gpt-4o-mini' },
+        { id: 'gemini', label: 'Google Gemini', configured, defaultModel: 'gemini-3.5-flash' },
+        { id: 'openai-compatible', label: 'OpenAI-compatible endpoint', configured: false, defaultModel: '' },
+      ],
+    });
+
+    it("asks for no key while the backend's provider is selected", async () => {
+      await open('Settings');
+      expect(screen.queryByLabelText('API key')).toBeNull();
+    });
+
+    it('takes a key for the chosen provider and saves it', async () => {
+      respond = (message) => (message.kind === 'backend:health' ? health(false) : defaultRespond(message));
+      const user = await open('Settings');
+
+      await user.selectOptions(screen.getByLabelText('Provider'), 'gemini');
+      expect(await screen.findByText(/Required: the backend has no key for this provider/)).toBeTruthy();
+      expect(screen.getByLabelText<HTMLInputElement>('Model').placeholder).toBe('gemini-3.5-flash');
+
+      const key = screen.getByLabelText<HTMLInputElement>('API key');
+      expect(key.type).toBe('password');
+      await user.type(key, 'g-user-key');
+      await user.click(screen.getByRole('button', { name: 'Save changes' }));
+
+      await screen.findByText('Settings saved.');
+      expect(stored).toMatchObject({ provider: 'gemini', aiApiKey: 'g-user-key' });
+    });
+
+    it('shows the key only on request', async () => {
+      stored = { ...DEFAULT_SETTINGS, provider: 'gemini', aiApiKey: 'g-user-key' };
+      const user = await open('Settings');
+
+      const key = screen.getByLabelText<HTMLInputElement>('API key');
+      expect(key.type).toBe('password');
+      await user.click(screen.getByRole('button', { name: 'Show' }));
+      expect(key.type).toBe('text');
+    });
+
+    it('asks for an endpoint and model with a key for an OpenAI-compatible provider', async () => {
+      const user = await open('Settings');
+      await user.selectOptions(screen.getByLabelText('Provider'), 'openai-compatible');
+      await user.type(screen.getByLabelText('API key'), 'k');
+
+      expect(screen.getByText('Enter the endpoint base URL to use your own key.')).toBeTruthy();
+      expect(screen.getByRole('button', { name: 'Test provider' }).hasAttribute('disabled')).toBe(true);
+
+      await user.type(screen.getByLabelText('Endpoint base URL'), 'not a url');
+      expect(screen.getByText('Not a valid http(s) URL.')).toBeTruthy();
+    });
+
+    it('tests the unsaved settings and reports the result', async () => {
+      respond = (message) =>
+        message.kind === 'provider:test'
+          ? {
+              ok: true,
+              kind: 'provider-test',
+              result: { provider: 'gemini', model: 'gemini-3.5-flash', answer: '4', latencyMs: 1400 },
+            }
+          : defaultRespond(message);
+      const user = await open('Settings');
+
+      await user.selectOptions(screen.getByLabelText('Provider'), 'gemini');
+      await user.type(screen.getByLabelText('API key'), 'g-user-key');
+      await user.click(screen.getByRole('button', { name: 'Test provider' }));
+
+      expect(await screen.findByText('gemini · gemini-3.5-flash answered "4" in 1.4s.')).toBeTruthy();
+      const test = sent.find((message) => message.kind === 'provider:test');
+      expect(test?.settings).toMatchObject({ provider: 'gemini', aiApiKey: 'g-user-key' });
+      expect(sent.some((message) => message.kind === 'settings:save')).toBe(false);
+    });
+
+    it('shows why a test failed', async () => {
+      respond = (message) =>
+        message.kind === 'provider:test'
+          ? { ok: false, code: 'provider_error', error: 'API key not valid. Please pass a valid API key.' }
+          : defaultRespond(message);
+      const user = await open('Settings');
+
+      await user.selectOptions(screen.getByLabelText('Provider'), 'gemini');
+      await user.click(screen.getByRole('button', { name: 'Test provider' }));
+
+      expect(await screen.findByText('API key not valid. Please pass a valid API key.')).toBeTruthy();
+    });
+
+    it('warns when the backend will refuse the key', async () => {
+      respond = (message) => (message.kind === 'backend:health' ? health(true, false) : defaultRespond(message));
+      stored = { ...DEFAULT_SETTINGS, provider: 'gemini', aiApiKey: 'g-user-key' };
+      await open('Settings');
+
+      expect(await screen.findByText(/This backend does not accept keys from the extension/)).toBeTruthy();
+    });
+  });
+
   it('clears the cached answers', async () => {
     const user = await open('Settings');
     await user.click(screen.getByRole('button', { name: 'Clear cached answers' }));

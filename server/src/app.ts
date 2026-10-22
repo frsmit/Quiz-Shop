@@ -17,7 +17,11 @@ import { memoryPersistence } from './db/persistence.js';
 import { ProviderFactory } from './providers/provider.factory.js';
 import type { ProviderRegistry } from './providers/provider.factory.js';
 import { QuestionService } from './question/question.service.js';
-import { answerQuestionHandler, clearCacheHandler } from './controllers/question.controller.js';
+import {
+  answerQuestionHandler,
+  clearCacheHandler,
+  testProviderHandler,
+} from './controllers/question.controller.js';
 import { healthHandler } from './controllers/health.controller.js';
 import type { PersistenceStatus } from './controllers/health.controller.js';
 import {
@@ -85,6 +89,7 @@ export function createApp(dependencies: AppDependencies = {}): Express {
   api.use(buildAuth(env));
   api.use(buildRateLimit(env));
   api.post('/questions/answer', answerQuestionHandler(service));
+  api.post('/providers/test', testProviderHandler(service));
   api.post('/cache/clear', clearCacheHandler(service));
   api.get('/history', listHistoryHandler(history));
   api.get('/stats', statsHandler(history));

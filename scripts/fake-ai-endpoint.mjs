@@ -23,10 +23,25 @@ function answerFor(userPrompt) {
 
   if (options) {
     // Always the second option, so tests and demos have something to assert.
-    const lines = options[1].split('\n');
-    const chosen = (lines[1] ?? lines[0] ?? '').replace(/^[A-Z]\.\s*/, '');
+    const lines = options[1].split('\n').map((line) => line.replace(/^[A-Z]\.\s*/, ''));
+    const chosen = lines[1] ?? lines[0] ?? '';
+
+    // A select-all-that-apply question gets the second and third options, so
+    // ticking several boxes can be demonstrated too.
+    if (/More than one option may be correct/.test(userPrompt)) {
+      const picks = lines.slice(1, 3);
+      return {
+        answer: picks.join('; '),
+        answers: picks,
+        explanation: `The local fake endpoint always picks the second and third options ("${picks.join('", "')}").`,
+        confidence: 0.42,
+        reasoningSummary: 'Deterministic choice, not a real judgement.',
+      };
+    }
+
     return {
       answer: chosen,
+      answers: [chosen],
       explanation: `The local fake endpoint always picks the second option ("${chosen}").`,
       confidence: 0.42,
       reasoningSummary: 'Deterministic choice, not a real judgement.',

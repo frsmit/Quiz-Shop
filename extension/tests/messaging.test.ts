@@ -9,7 +9,7 @@
  * caching, request coalescing and settings broadcasting.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { DEFAULT_SETTINGS, SETTINGS_STORAGE_KEY } from '../src/shared/constants';
+import { DEFAULT_SETTINGS, SECRETS_STORAGE_KEY, SETTINGS_STORAGE_KEY } from '../src/shared/constants';
 import { MESSAGE_SOURCE, envelope } from '../src/shared/messages';
 import type { WorkerResponse } from '../src/shared/messages';
 import type { ExtensionSettings, QuestionAnswer } from '../src/shared/types';
@@ -671,5 +671,83 @@ describe('options page → service worker → server history', () => {
     );
 
     await expect(send({ kind: 'backend:health' })).resolves.toMatchObject({ persistence });
+  });
+});
+
+describe("the user's own provider key, in the worker", () => {
+  const WITH_KEY = { ...DEFAULT_SETTINGS, provider: 'gemini' as const, aiApiKey: 'g-user-key' };
+
+  it('is stored on this device only, apart from the synced settings', async () => {
+    await send({ kind: 'settings:save', settings: WITH_KEY });
+
+    expect(JSON.stringify(storage)).not.toContain('g-user-key');
+    expect(local[SECRETS_STORAGE_KEY]).toEqual({ aiApiKey: 'g-user-key' });
+    await expect(send({ kind: 'settings:get' })).resolves.toMatchObject({
+      settings: { provider: 'gemini', aiApiKey: 'g-user-key' },
+    });
+  });
+
+  it('is never handed to a content script', async () => {
+    await send({ kind: 'settings:save', settings: { ...WITH_KEY, backendApiKey: 'shared' } });
+
+    const response = await send({ kind: 'settings:get' }, FROM_TAB);
+    expect(JSON.stringify(response)).not.toContain('g-user-key');
+    expect(JSON.stringify(response)).not.toContain('shared');
+    expect(JSON.stringify(sentToTabs)).not.toContain('g-user-key');
+  });
+
+  it('goes to the backend with each question', async () => {
+    await send({ kind: 'settings:save', settings: WITH_KEY });
+    const headers: Array<Record<string, string>> = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((_url: string, init?: RequestInit) => {
+        headers.push(init?.headers as Record<string, string>);
+        return Promise.resolve(jsonResponse({ data: ANSWER, meta: { cached: false } }));
+      }),
+    );
+
+    await send({ kind: 'question:detected', fingerprint: 'key1', request: REQUEST }, FROM_TAB);
+    expect(headers[0]?.['x-ai-api-key']).toBe('g-user-key');
+  });
+
+  it('can be tested from the options page with unsaved settings', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve(jsonResponse({ data: { provider: 'gemini', model: 'g', answer: '4', latencyMs: 700 } })),
+      ),
+    );
+
+    await expect(send({ kind: 'provider:test', settings: WITH_KEY })).resolves.toMatchObject({
+      ok: true,
+      kind: 'provider-test',
+      result: { provider: 'gemini', answer: '4' },
+    });
+  });
+
+  it('cannot be tested from a content script', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(send({ kind: 'provider:test', settings: WITH_KEY }, FROM_TAB)).resolves.toMatchObject({
+      ok: false,
+      code: 'bad_request',
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('reports what the backend knows about each provider', async () => {
+    const allProviders = [{ id: 'gemini', label: 'Google Gemini', configured: false, defaultModel: 'g' }];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve(
+          jsonResponse({ status: 'ok', activeProvider: 'openai', providers: [], allProviders, clientCredentials: true }),
+        ),
+      ),
+    );
+
+    await expect(send({ kind: 'backend:health' })).resolves.toMatchObject({ allProviders, clientCredentials: true });
   });
 });

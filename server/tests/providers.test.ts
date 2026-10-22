@@ -376,6 +376,74 @@ describe('ProviderFactory', () => {
     );
     expect(complete.create('openai-compatible').getModel()).toBe('local-model');
   });
+
+  it("keeps AI_MODEL to AI_PROVIDER rather than sending it to another vendor", () => {
+    const factory = new ProviderFactory(
+      loadEnv({
+        ...base,
+        AI_PROVIDER: 'gemini',
+        AI_MODEL: 'gemini-3.5-flash-lite',
+        GEMINI_API_KEY: 'g-test',
+        OPENAI_API_KEY: 'sk-test',
+      }),
+    );
+
+    expect(factory.create().getModel()).toBe('gemini-3.5-flash-lite');
+    expect(factory.create('openai').getModel()).toBe('gpt-4o-mini');
+    expect(factory.describe().find((entry) => entry.id === 'openai')?.defaultModel).toBe('gpt-4o-mini');
+  });
+
+  describe('with a key from the extension', () => {
+    it('builds a provider the server has no key for', () => {
+      const factory = new ProviderFactory(loadEnv(base));
+      const provider = factory.create('anthropic', undefined, { apiKey: 'sk-ant-user' });
+
+      expect(provider.getName()).toBe('anthropic');
+      expect(provider.getModel()).toBe('claude-opus-5');
+    });
+
+    it('applies the requested model alongside the key', () => {
+      const factory = new ProviderFactory(loadEnv(base));
+      expect(factory.create('openai', 'gpt-4.1-mini', { apiKey: 'sk-user' }).getModel()).toBe('gpt-4.1-mini');
+    });
+
+    it('is refused when the server turns client keys off', () => {
+      const factory = new ProviderFactory(
+        loadEnv({ ...base, OPENAI_API_KEY: 'sk-test', ALLOW_CLIENT_AI_KEYS: 'false' }),
+      );
+
+      expect(() => factory.create('openai', undefined, { apiKey: 'sk-user' })).toThrow(
+        /ALLOW_CLIENT_AI_KEYS/,
+      );
+      expect(factory.create('openai').getName()).toBe('openai');
+    });
+
+    it("needs the user's own base URL and model for an OpenAI-compatible endpoint", () => {
+      // The server's endpoint is configured, but a user's key never goes to it.
+      const factory = new ProviderFactory(
+        loadEnv({
+          ...base,
+          AI_BASE_URL: 'https://server.test/v1',
+          AI_API_KEY: 'server-key',
+          AI_MODEL: 'server-model',
+        }),
+      );
+
+      expect(() => factory.create('openai-compatible', 'm', { apiKey: 'k' })).toThrow(/base URL/);
+      expect(() =>
+        factory.create('openai-compatible', undefined, { apiKey: 'k', baseUrl: 'https://mine.test/v1' }),
+      ).toThrow(/model/);
+      expect(() =>
+        factory.create('openai-compatible', 'm', { apiKey: 'k', baseUrl: 'file:///etc/passwd' }),
+      ).toThrow(/http/);
+
+      const provider = factory.create('openai-compatible', 'my-model', {
+        apiKey: 'k',
+        baseUrl: 'https://mine.test/v1',
+      });
+      expect(provider.getModel()).toBe('my-model');
+    });
+  });
 });
 
 describe('GeminiProvider', () => {

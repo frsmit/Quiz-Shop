@@ -52,6 +52,15 @@ const envSchema = z.object({
   AI_BASE_URL: z.string().optional(),
   AI_API_KEY: z.string().optional(),
 
+  /**
+   * Accept a provider API key (and, for an OpenAI-compatible endpoint, a base
+   * URL) sent by the extension with each request, so each user can bring their
+   * own key from the extension's settings. Such a key is used for that request
+   * only - never stored, logged or cached. Off means only the keys above are
+   * ever used.
+   */
+  ALLOW_CLIENT_AI_KEYS: booleanish.default(true),
+
   /** Shared secret the extension must present, when set. */
   API_ACCESS_KEY: z.string().optional(),
 

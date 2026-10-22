@@ -11,6 +11,8 @@ import type {
   ActivityStats,
   DetectedQuestion,
   ExtensionSettings,
+  ProviderInfo,
+  ProviderTestResult,
   QuestionAnswer,
   QuestionRequest,
   RuntimeStatus,
@@ -34,6 +36,8 @@ export type UiToWorkerMessage =
   | { kind: 'settings:get' }
   | { kind: 'settings:save'; settings: ExtensionSettings }
   | { kind: 'backend:health' }
+  /** Try the provider in the given settings, saved or not, with one small question. */
+  | { kind: 'provider:test'; settings: ExtensionSettings }
   | { kind: 'cache:clear' }
   | { kind: 'run:get' }
   | { kind: 'run:pause' }
@@ -57,9 +61,13 @@ export type WorkerResponse =
       kind: 'health';
       providers: string[];
       activeProvider: string;
+      /** Absent from backends that predate per-user keys. */
+      allProviders?: ProviderInfo[];
+      clientCredentials?: boolean;
       /** Absent from backends that predate persistence. */
       persistence?: ServerPersistence;
     }
+  | { ok: true; kind: 'provider-test'; result: ProviderTestResult }
   | { ok: true; kind: 'history'; page: ServerHistoryPage }
   | { ok: true; kind: 'server-stats'; stats: ServerStats }
   | { ok: true; kind: 'history-cleared'; deleted: number }

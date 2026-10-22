@@ -131,18 +131,18 @@ describe('matchOption', () => {
 });
 
 describe('applyAnswer', () => {
-  it('selects the matching radio button', () => {
+  it('selects the matching radio button', async () => {
     const container = render(`<div>
       <label><input type="radio" name="q" value="a" /> O(n)</label>
       <label><input type="radio" name="q" value="b" /> O(log n)</label>
     </div>`);
 
-    expect(applyAnswer(container, answer('O(log n)'))).toBe('filled');
+    expect(await applyAnswer(container, answer('O(log n)'))).toBe('filled');
     expect(container.querySelector<HTMLInputElement>('input[value="b"]')?.checked).toBe(true);
     expect(container.querySelector<HTMLInputElement>('input[value="a"]')?.checked).toBe(false);
   });
 
-  it('fires a change event the page can listen for', () => {
+  it('fires a change event the page can listen for', async () => {
     const container = render(`<div>
       <label><input type="radio" name="q" value="a" /> Yes</label>
       <label><input type="radio" name="q" value="b" /> No</label>
@@ -153,20 +153,20 @@ describe('applyAnswer', () => {
       changes += 1;
     });
 
-    applyAnswer(container, answer('No'));
+    await applyAnswer(container, answer('No'));
     expect(changes).toBe(1);
   });
 
-  it('selects the matching option in a dropdown', () => {
+  it('selects the matching option in a dropdown', async () => {
     const container = render(`<div>
       <select><option value="">Pick</option><option>WHERE</option><option>HAVING</option></select>
     </div>`);
 
-    expect(applyAnswer(container, answer('HAVING'))).toBe('filled');
+    expect(await applyAnswer(container, answer('HAVING'))).toBe('filled');
     expect(container.querySelector('select')?.value).toBe('HAVING');
   });
 
-  it('types into a free-text field and notifies listeners', () => {
+  it('types into a free-text field and notifies listeners', async () => {
     const container = render('<div><textarea></textarea></div>');
     const field = container.querySelector('textarea') as HTMLTextAreaElement;
 
@@ -174,33 +174,33 @@ describe('applyAnswer', () => {
     field.addEventListener('input', () => events.push('input'));
     field.addEventListener('change', () => events.push('change'));
 
-    expect(applyAnswer(container, answer('Polymorphism is …'))).toBe('filled');
+    expect(await applyAnswer(container, answer('Polymorphism is …'))).toBe('filled');
     expect(field.value).toBe('Polymorphism is …');
     expect(events).toEqual(['input', 'change']);
   });
 
-  it('leaves a disabled control alone', () => {
+  it('leaves a disabled control alone', async () => {
     const container = render(`<div>
       <label><input type="radio" name="q" value="a" disabled /> Yes</label>
       <label><input type="radio" name="q" value="b" disabled /> No</label>
     </div>`);
 
-    expect(applyAnswer(container, answer('No'))).toBe('no-control');
+    expect(await applyAnswer(container, answer('No'))).toBe('no-control');
     expect(container.querySelector<HTMLInputElement>('input[value="b"]')?.checked).toBe(false);
   });
 
-  it('reports when no option matches rather than guessing', () => {
+  it('reports when no option matches rather than guessing', async () => {
     const container = render(`<div>
       <label><input type="radio" name="q" value="a" /> Yes</label>
       <label><input type="radio" name="q" value="b" /> No</label>
     </div>`);
 
-    expect(applyAnswer(container, answer('Maybe'))).toBe('no-match');
+    expect(await applyAnswer(container, answer('Maybe'))).toBe('no-match');
     expect(container.querySelectorAll(':checked')).toHaveLength(0);
   });
 
-  it('reports when there is nothing to fill', () => {
+  it('reports when there is nothing to fill', async () => {
     const container = render('<div><p>Just a question, no controls.</p></div>');
-    expect(applyAnswer(container, answer('anything'))).toBe('no-control');
+    expect(await applyAnswer(container, answer('anything'))).toBe('no-control');
   });
 });

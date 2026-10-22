@@ -12,6 +12,7 @@ import { getEnv } from './env.js';
 const REDACTED_PATHS = [
   'req.headers.authorization',
   'req.headers["x-api-key"]',
+  'req.headers["x-ai-api-key"]',
   'req.headers.cookie',
   '*.apiKey',
   '*.api_key',

@@ -17,6 +17,7 @@ import type { ActivityOutcome, DetectedQuestion, ExtensionSettings, QuestionAnsw
 import { detectQuestions } from './detector';
 import { applyAnswer } from './interaction';
 import { createPageObserver } from './observer';
+import { searchRoots } from './dom';
 
 /** Fingerprints already sent; prevents re-asking after a re-render. */
 const processed = new Set<string>();
@@ -75,11 +76,29 @@ function scheduleRetry(delayMs: number): void {
   }, Math.max(500, Math.min(delayMs, 5 * 60 * 1000)));
 }
 
+/** Questions being filled right now; a rescan mid-fill must not click again. */
+const filling = new Set<string>();
+
+/**
+ * Questions the page would not let us select. Re-filling them on every
+ * rescan would only repeat the same clicks, so they are left alone.
+ */
+const notApplied = new Set<string>();
+
 /** Put an answer into the page and tell the worker how it went. */
 function fill(question: DetectedQuestion, answer: QuestionAnswer): void {
   if (!settings?.autoFill || !question.container.isConnected) return;
-  const outcome = applyAnswer(question.container, answer) as ActivityOutcome;
-  void send({ kind: 'answer:applied', fingerprint: question.fingerprint, outcome });
+  const { fingerprint } = question;
+  if (filling.has(fingerprint) || notApplied.has(fingerprint)) return;
+
+  filling.add(fingerprint);
+  void applyAnswer(question.container, answer, question.controls)
+    .catch((): ActivityOutcome => 'not-applied')
+    .then((outcome) => {
+      if (outcome === 'not-applied') notApplied.add(fingerprint);
+      return send({ kind: 'answer:applied', fingerprint, outcome });
+    })
+    .finally(() => filling.delete(fingerprint));
 }
 
 async function resolveQuestion(question: DetectedQuestion): Promise<void> {
@@ -138,6 +157,10 @@ async function scan(): Promise<void> {
       url: location.href,
       title: document.title,
     });
+
+    // Shadow roots are only found by walking the page; watch each one found
+    // so components that render their options later are rescanned too.
+    for (const scope of searchRoots(document).slice(1)) observer.watch(scope);
 
     for (const question of questions) {
       const known = answers.get(question.fingerprint);

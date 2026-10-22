@@ -37,7 +37,7 @@ export function buildCors(env: Env): RequestHandler {
       callback(new HttpError(403, 'origin_not_allowed', `Origin ${origin} is not allowed.`));
     },
     methods: ['GET', 'POST', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'x-api-key'],
+    allowedHeaders: ['Content-Type', 'x-api-key', 'x-ai-api-key', 'x-ai-base-url'],
     maxAge: 600,
   };
 

@@ -9,7 +9,8 @@ import { createHash } from 'node:crypto';
 import type { AnswerStore } from '../cache/answer-cache.js';
 import type { HistoryStore } from '../history/history-store.js';
 import type { ProviderRegistry } from '../providers/provider.factory.js';
-import type { QuestionAnswer, QuestionRequest } from './question.schema.js';
+import type { ClientCredentials } from '../providers/ai-provider.interface.js';
+import type { ProviderId, QuestionAnswer, QuestionRequest } from './question.schema.js';
 import { withRetry } from '../providers/retry.js';
 import { withDeadline } from '../providers/provider.utils.js';
 import { getLogger } from '../config/logger.js';
@@ -18,6 +19,20 @@ export interface AnswerResult {
   answer: QuestionAnswer;
   cached: boolean;
 }
+
+export interface ProbeResult {
+  provider: string;
+  model: string;
+  answer: string;
+  latencyMs: number;
+}
+
+/** Small enough to cost almost nothing, and with one unarguable answer. */
+const PROBE_QUESTION: QuestionRequest = {
+  question: 'What is 2 + 2?',
+  type: 'multiple_choice',
+  options: ['3', '4', '5', '22'],
+};
 
 export interface QuestionServiceOptions {
   /** Attempts per question, including the first. */
@@ -55,15 +70,28 @@ export class QuestionService {
     this.now = options.now ?? Date.now;
   }
 
-  async answer(request: QuestionRequest, signal?: AbortSignal): Promise<AnswerResult> {
+  /**
+   * `credentials` is the caller's own provider key, for this request only.
+   * It reaches the adapter and nothing else: the cache key and the history
+   * record name the provider and model, never the key.
+   */
+  async answer(
+    request: QuestionRequest,
+    signal?: AbortSignal,
+    credentials?: ClientCredentials,
+  ): Promise<AnswerResult> {
     const startedAt = this.now();
-    const result = await this.resolve(request, signal);
+    const result = await this.resolve(request, signal, credentials);
     this.record(request, result, this.now() - startedAt);
     return result;
   }
 
-  private async resolve(request: QuestionRequest, signal?: AbortSignal): Promise<AnswerResult> {
-    const provider = this.factory.create(request.provider, request.model);
+  private async resolve(
+    request: QuestionRequest,
+    signal?: AbortSignal,
+    credentials?: ClientCredentials,
+  ): Promise<AnswerResult> {
+    const provider = this.factory.create(request.provider, request.model, credentials);
     const key = cacheKey(provider.getName(), provider.getModel(), request);
 
     // A cache that is down (a MongoDB blip, say) costs a provider call, not
@@ -95,7 +123,7 @@ export class QuestionService {
       },
     })
       .then(async (raw) => {
-        const answer = alignToOption(raw, request.options);
+        const answer = alignAnswer(raw, request);
         await this.store.set(key, answer).catch((error: unknown) => {
           getLogger().warn({ err: error }, 'Answer cache write failed');
         });
@@ -112,6 +140,33 @@ export class QuestionService {
 
   clearCache(): Promise<void> {
     return this.store.clear();
+  }
+
+  /**
+   * Ask a provider one fixed question, bypassing the cache, the retries and
+   * the history - so a key or model can be tried out from the settings page
+   * before any page question depends on it. Failures propagate as the same
+   * `ProviderError`s a real question would raise.
+   */
+  async probe(
+    target: { provider?: ProviderId | undefined; model?: string | undefined },
+    signal?: AbortSignal,
+    credentials?: ClientCredentials,
+  ): Promise<ProbeResult> {
+    const provider = this.factory.create(target.provider, target.model, credentials);
+    const budget = this.budgetMs === undefined ? undefined : withDeadline(this.budgetMs, signal);
+    const startedAt = this.now();
+    try {
+      const raw = await provider.answerQuestion(PROBE_QUESTION, budget?.signal ?? signal);
+      return {
+        provider: provider.getName(),
+        model: raw.model || provider.getModel(),
+        answer: alignAnswer(raw, PROBE_QUESTION).answer,
+        latencyMs: this.now() - startedAt,
+      };
+    } finally {
+      budget?.dispose();
+    }
   }
 
   /** Fire and forget: history is a record, and never delays or fails an answer. */
@@ -138,6 +193,8 @@ export function cacheKey(provider: string, model: string, request: QuestionReque
     normalize(request.question),
     ...(request.options ?? []).map(normalize),
     normalize(request.context ?? ''),
+    // Appended only when set, so every single-answer key is unchanged.
+    ...(request.multiSelect ? ['multi-select'] : []),
   ].join('\u0001');
 
   return createHash('sha256').update(canonical).digest('hex').slice(0, 32);
@@ -161,14 +218,41 @@ const LABELLED_ANSWER = /^\(?([a-z])\s*[).:\]]\s*(.+)$/is;
  */
 export function alignToOption(answer: QuestionAnswer, options: readonly string[] | undefined): QuestionAnswer {
   if (!options?.length) return answer;
-  const text = answer.answer.trim();
-  if (options.includes(text)) return answer;
+  const aligned = alignText(answer.answer, options);
+  return aligned === undefined ? answer : { ...answer, answer: aligned };
+}
 
-  const exact = options.find((option) => normalize(option) === normalize(text));
-  if (exact !== undefined) return { ...answer, answer: exact };
+/** The option `text` names, by its exact text or its label; undefined if none. */
+function alignText(text: string, options: readonly string[]): string | undefined {
+  const trimmed = text.trim();
+  if (options.includes(trimmed)) return trimmed;
 
-  const labelled = LABELLED_ANSWER.exec(text);
-  if (!labelled?.[2]) return answer;
-  const option = options.find((candidate) => normalize(candidate) === normalize(labelled[2] as string));
-  return option === undefined ? answer : { ...answer, answer: option };
+  const exact = options.find((option) => normalize(option) === normalize(trimmed));
+  if (exact !== undefined) return exact;
+
+  const labelled = LABELLED_ANSWER.exec(trimmed);
+  if (!labelled?.[2]) return undefined;
+  return options.find((candidate) => normalize(candidate) === normalize(labelled[2] as string));
+}
+
+/**
+ * Bring a provider's answer into the contract for this request.
+ *
+ * `answers` is kept only for a multi-select question, where it is the list
+ * the extension ticks - each entry aligned to an option the same way
+ * `answer` is. A model that left the list empty is read from `answer`
+ * instead, split on the "; " the prompt asked it to join with. Elsewhere the
+ * list would only repeat `answer`, so it is dropped.
+ */
+export function alignAnswer(raw: QuestionAnswer, request: QuestionRequest): QuestionAnswer {
+  const { answers, ...single } = raw;
+  const options = request.options;
+  if (!request.multiSelect || !options?.length) return alignToOption(single, options);
+
+  const listed = answers?.map((entry) => entry.trim()).filter(Boolean) ?? [];
+  const source = listed.length > 0 ? listed : raw.answer.split(/\s*;\s*|\n+/).filter(Boolean);
+  const picked = [...new Set(source.map((entry) => alignText(entry, options) ?? entry))];
+  if (picked.length === 0) return alignToOption(single, options);
+
+  return { ...single, answer: picked.join('; '), answers: picked };
 }

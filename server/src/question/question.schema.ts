@@ -42,6 +42,12 @@ export const questionRequestSchema = z.object({
 
   context: z.string().trim().max(QUESTION_LIMITS.maxContextLength).optional(),
 
+  /**
+   * More than one option may be correct ("select all that apply"): the page
+   * offers checkboxes rather than radio buttons. Only meaningful with options.
+   */
+  multiSelect: z.boolean().optional(),
+
   source: z
     .object({
       url: z.string().max(2000).optional(),
@@ -61,6 +67,12 @@ export const questionRequestSchema = z.object({
  */
 export const providerAnswerSchema = z.object({
   answer: z.string().min(1).max(4000),
+  /**
+   * Every option chosen, for a question where more than one may be correct.
+   * The service keeps it only for multi-select requests; `answer` then lists
+   * the same options joined by "; ", for display.
+   */
+  answers: z.array(z.string().max(4000)).max(50).optional(),
   explanation: z.string().min(1).max(4000),
   confidence: z.number().min(0).max(1).optional(),
   reasoningSummary: z.string().max(2000).optional(),
@@ -90,6 +102,12 @@ export const ANSWER_JSON_SCHEMA = {
       description:
         'The answer itself. For a multiple-choice question this must be the exact text of one of the supplied options.',
     },
+    answers: {
+      type: 'array',
+      items: { type: 'string' },
+      description:
+        'For a multiple-choice question, the exact text of every option chosen - one entry for a single-answer question, all the correct ones when more than one may be correct. Empty for any other question.',
+    },
     explanation: {
       type: 'string',
       description: 'A short explanation of why that answer is correct, aimed at a learner.',
@@ -104,6 +122,6 @@ export const ANSWER_JSON_SCHEMA = {
         'One or two sentences summarising the approach. Never include internal chain-of-thought.',
     },
   },
-  required: ['answer', 'explanation', 'confidence', 'reasoningSummary'],
+  required: ['answer', 'answers', 'explanation', 'confidence', 'reasoningSummary'],
   additionalProperties: false,
 } as const;

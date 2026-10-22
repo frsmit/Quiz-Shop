@@ -8,6 +8,7 @@
 import {
   DEFAULT_SETTINGS,
   LOG_LIMIT_BOUNDS,
+  SECRETS_STORAGE_KEY,
   SETTINGS_STORAGE_KEY,
   TIMING_BOUNDS,
 } from '../shared/constants';
@@ -15,15 +16,41 @@ import type { ExtensionSettings, ProviderChoice } from '../shared/types';
 
 const PROVIDERS: readonly ProviderChoice[] = ['', 'openai', 'gemini', 'anthropic', 'openai-compatible'];
 
+/** Settings that are credentials: stored per device, never sent to a page. */
+interface Secrets {
+  aiApiKey: string;
+}
+
 export async function readSettings(): Promise<ExtensionSettings> {
-  const stored = await chrome.storage.sync.get(SETTINGS_STORAGE_KEY);
-  return sanitize(stored[SETTINGS_STORAGE_KEY]);
+  const [stored, secrets] = await Promise.all([
+    chrome.storage.sync.get(SETTINGS_STORAGE_KEY),
+    chrome.storage.local.get(SECRETS_STORAGE_KEY),
+  ]);
+  const synced = stored[SETTINGS_STORAGE_KEY];
+  const own = secrets[SECRETS_STORAGE_KEY] as Partial<Secrets> | undefined;
+  return sanitize({
+    ...(typeof synced === 'object' && synced !== null ? synced : {}),
+    aiApiKey: own?.aiApiKey,
+  });
 }
 
 export async function writeSettings(value: unknown): Promise<ExtensionSettings> {
   const settings = sanitize(value);
-  await chrome.storage.sync.set({ [SETTINGS_STORAGE_KEY]: settings });
+  const { aiApiKey, ...synced } = settings;
+  await Promise.all([
+    chrome.storage.sync.set({ [SETTINGS_STORAGE_KEY]: synced }),
+    chrome.storage.local.set({ [SECRETS_STORAGE_KEY]: { aiApiKey } satisfies Secrets }),
+  ]);
   return settings;
+}
+
+/**
+ * The settings a content script may see. Content scripts run inside pages
+ * the extension does not control, so neither key leaves the worker: the
+ * content script needs only the behaviour switches.
+ */
+export function forContentScript(settings: ExtensionSettings): ExtensionSettings {
+  return { ...settings, aiApiKey: '', backendApiKey: '' };
 }
 
 /**
@@ -41,6 +68,8 @@ export function sanitize(value: unknown): ExtensionSettings {
       ? (input.provider as ProviderChoice)
       : DEFAULT_SETTINGS.provider,
     model: asString(input.model, DEFAULT_SETTINGS.model).slice(0, 120),
+    aiApiKey: asString(input.aiApiKey, DEFAULT_SETTINGS.aiApiKey).slice(0, 512),
+    aiBaseUrl: asOptionalUrl(asString(input.aiBaseUrl, DEFAULT_SETTINGS.aiBaseUrl)),
     backendUrl: normalizeUrl(asString(input.backendUrl, DEFAULT_SETTINGS.backendUrl)),
     backendApiKey: asString(input.backendApiKey, DEFAULT_SETTINGS.backendApiKey).slice(0, 200),
     autoDetect: asBoolean(input.autoDetect, DEFAULT_SETTINGS.autoDetect),
@@ -101,6 +130,18 @@ function asOrigins(value: unknown): string[] {
     }
   }
   return [...origins];
+}
+
+/** An http(s) URL without its trailing slash, or '' for anything else. */
+function asOptionalUrl(value: string): string {
+  const trimmed = value.replace(/\/+$/, '');
+  if (!trimmed) return '';
+  try {
+    const url = new URL(trimmed);
+    return url.protocol === 'http:' || url.protocol === 'https:' ? trimmed.slice(0, 2000) : '';
+  } catch {
+    return '';
+  }
 }
 
 function normalizeUrl(value: string): string {

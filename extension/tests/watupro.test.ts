@@ -80,7 +80,9 @@ describe('WatuPRO quizzes', () => {
     const found = detect();
 
     expect(found.map((q) => q.request)).toEqual([
-      { question: Q1, type: 'multiple_choice', options: ['in', 'on', 'onto', 'into'] },
+      // WatuPRO draws these as checkboxes, so the model is told more than one
+      // answer may be right.
+      { question: Q1, type: 'multiple_choice', options: ['in', 'on', 'onto', 'into'], multiSelect: true },
     ]);
   });
 
@@ -92,9 +94,9 @@ describe('WatuPRO quizzes', () => {
     expect(detect().map((q) => q.request.question)).not.toContain(Q2);
   });
 
-  it('ticks the matching checkbox, and only that one', () => {
+  it('ticks the matching checkbox, and only that one', async () => {
     const [first] = detect();
-    expect(applyAnswer(first!.container, { answer: 'on', explanation: 'x', provider: 'p', model: 'm' })).toBe(
+    expect(await applyAnswer(first!.container, { answer: 'on', explanation: 'x', provider: 'p', model: 'm' })).toBe(
       'filled',
     );
 

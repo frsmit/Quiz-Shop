@@ -9,13 +9,13 @@
 const LATE_QUESTIONS = [
   {
     id: 'q-git',
-    heading: 'Question 8',
+    heading: 'Question 11',
     prompt: 'Which Git command creates a new branch and switches to it in one step?',
     options: ['git branch new-feature', 'git checkout -b new-feature', 'git merge new-feature', 'git switch --merge'],
   },
   {
     id: 'q-python',
-    heading: 'Question 9',
+    heading: 'Question 12',
     prompt: 'In Python, what does the len() built-in return for the string "quiz"?',
     options: ['3', '4', '5', 'It raises a TypeError'],
   },
@@ -92,3 +92,43 @@ document.getElementById('rerender')?.addEventListener('click', () => {
   }
   announce(`Rebuilt ${sections.length} question nodes.`);
 });
+
+/*
+ * Question 9 behaves like a component-library radio group: the hidden input's
+ * own click is cancelled, and the row selects itself on mousedown. A script
+ * that only calls input.click() leaves it unanswered.
+ */
+for (const list of document.querySelectorAll('[data-choice-list]')) {
+  list.addEventListener('click', (event) => {
+    if (event.target instanceof HTMLInputElement) event.preventDefault();
+  });
+  list.addEventListener('mousedown', (event) => {
+    const row = event.target instanceof Element ? event.target.closest('.choice-row') : null;
+    if (!row) return;
+    for (const other of list.querySelectorAll('.choice-row')) {
+      other.classList.toggle('is-selected', other === row);
+      other.querySelector('input').checked = other === row;
+    }
+  });
+}
+
+/* Question 10: ARIA radios that keep their state in aria-checked. */
+for (const group of document.querySelectorAll('[data-aria-group]')) {
+  const select = (option) => {
+    for (const other of group.querySelectorAll('[role="radio"]')) {
+      other.setAttribute('aria-checked', String(other === option));
+      other.tabIndex = other === option ? 0 : -1;
+    }
+  };
+  group.addEventListener('click', (event) => {
+    const option = event.target instanceof Element ? event.target.closest('[role="radio"]') : null;
+    if (option) select(option);
+  });
+  group.addEventListener('keydown', (event) => {
+    const option = event.target instanceof Element ? event.target.closest('[role="radio"]') : null;
+    if (option && event.key === ' ') {
+      event.preventDefault();
+      select(option);
+    }
+  });
+}

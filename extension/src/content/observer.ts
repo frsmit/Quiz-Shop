@@ -22,6 +22,12 @@ export interface PageObserver {
   stop: () => void;
   /** Request a scan directly, bypassing mutation filtering but not the debounce. */
   schedule: () => void;
+  /**
+   * Also watch inside a shadow root. Mutations there never reach an observer
+   * on the document, so a web component that renders its options late would
+   * otherwise go unseen. Watching the same root twice is a no-op.
+   */
+  watch: (root: Node) => void;
 }
 
 const RELEVANT_SELECTOR = 'input, select, textarea, label, form, fieldset, [data-question], .question';
@@ -79,6 +85,14 @@ export function createPageObserver(options: PageObserverOptions): PageObserver {
 
   let timer: ReturnType<typeof setTimeout> | null = null;
   let observer: MutationObserver | null = null;
+  let watched = new WeakSet<Node>();
+  const observeOptions: MutationObserverInit = {
+    childList: true,
+    subtree: true,
+    characterData: true,
+    attributes: true,
+    attributeFilter,
+  };
 
   const schedule = () => {
     if (timer !== null) clearTimeout(timer);
@@ -97,23 +111,23 @@ export function createPageObserver(options: PageObserverOptions): PageObserver {
     start() {
       if (observer) return;
       observer = new MutationObserver(handle);
-      observer.observe(document.documentElement, {
-        childList: true,
-        subtree: true,
-        characterData: true,
-        attributes: true,
-        attributeFilter,
-      });
+      observer.observe(document.documentElement, observeOptions);
       schedule();
     },
     stop() {
       observer?.disconnect();
       observer = null;
+      watched = new WeakSet<Node>();
       if (timer !== null) {
         clearTimeout(timer);
         timer = null;
       }
     },
     schedule,
+    watch(root) {
+      if (!observer || watched.has(root)) return;
+      watched.add(root);
+      observer.observe(root, observeOptions);
+    },
   };
 }

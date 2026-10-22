@@ -301,8 +301,17 @@ code,
 
 .card > .field,
 .card > .toggle,
-.card > .row {
+.card > .row,
+.card > .provider-test {
   margin-bottom: 14px;
+}
+
+/* A notice sits inset in the card, with its own padding, rather than taking
+   the card's edge-to-edge child padding. */
+.card > .notice,
+.card > .notice:last-child {
+  margin: 0 18px 18px;
+  padding: 10px 13px;
 }
 
 .card > *:last-child {
@@ -412,6 +421,9 @@ code,
 .field {
   display: grid;
   gap: 5px;
+  /* In a two-column row the shorter field must not stretch its rows to the
+     taller one's height - labels and controls stay on the same line. */
+  align-content: start;
 }
 
 .field > label,
@@ -425,6 +437,11 @@ code,
   color: var(--muted);
   font-size: 12px;
   max-width: 70ch;
+}
+
+/* Numbers are short; a full-width box for "500" reads as a text field. */
+input[type='number'] {
+  max-width: 220px;
 }
 
 input[type='text'],
@@ -919,4 +936,25 @@ button.danger {
 
 .muted {
   color: var(--muted);
+}
+
+/* ---------- provider ---------- */
+
+.input-with-action {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+}
+
+.provider-test {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+
+input[aria-invalid='true'] {
+  border-color: var(--ink);
+  border-style: dashed;
 }

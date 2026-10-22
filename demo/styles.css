@@ -228,3 +228,78 @@ button:disabled {
   font-size: 13px;
   text-align: center;
 }
+
+input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+  flex: none;
+}
+
+/* Question 9: a styled radio drawn over a hidden input. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.choice-list {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.choice-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.choice-row p {
+  margin: 0;
+}
+
+.choice-ripple {
+  position: relative;
+  display: inline-flex;
+}
+
+.choice-dot {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border);
+  border-radius: 50%;
+}
+
+.choice-row.is-selected {
+  border-color: var(--accent);
+}
+
+.choice-row.is-selected .choice-dot {
+  border-color: var(--accent);
+  background: radial-gradient(var(--accent) 45%, transparent 50%);
+}
+
+/* Question 10: ARIA radios. */
+.aria-options {
+  display: grid;
+  gap: 6px;
+}
+
+.aria-option {
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.aria-option[aria-checked="true"] {
+  border-color: var(--accent);
+  font-weight: 600;
+}

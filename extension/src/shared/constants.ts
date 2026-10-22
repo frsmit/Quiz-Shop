@@ -7,6 +7,13 @@ export const SETTINGS_STORAGE_KEY = 'settings';
 export const RUN_STATE_STORAGE_KEY = 'runState';
 export const ACTIVITY_LOG_STORAGE_KEY = 'activityLog';
 
+/**
+ * `chrome.storage.local` key for the user's own provider key. Kept apart from
+ * the synced settings so a key typed on one machine is never copied to
+ * another through the browser profile.
+ */
+export const SECRETS_STORAGE_KEY = 'secrets';
+
 /** Transport limits, mirrored by the backend's Zod schema. */
 export const LIMITS = {
   maxQuestionLength: 4000,
@@ -55,6 +62,8 @@ export function isStaticallyInjected(origin: string): boolean {
 export const DEFAULT_SETTINGS: ExtensionSettings = {
   provider: '',
   model: '',
+  aiApiKey: '',
+  aiBaseUrl: '',
   // 127.0.0.1 rather than localhost on purpose. The backend binds IPv4 only
   // (HOST defaults to 127.0.0.1), while `localhost` resolves to ::1 first on
   // Windows - so if anything else is listening on IPv6 port 3000, that is

@@ -88,8 +88,11 @@ flowchart TD
 
 Two rules shape the whole design:
 
-1. **Provider credentials never enter the browser.** The extension only ever
-   talks to your backend; the backend holds the keys.
+1. **The extension only ever talks to your backend.** The backend holds its
+   own provider keys; a user who prefers their own account can enter a key in
+   the extension's settings, which travels to the backend in a header for each
+   request and is never stored or logged there (see
+   [Choosing a provider from the extension](#choosing-a-provider-from-the-extension)).
 2. **Nothing above the `AIProvider` interface knows which vendor answered.**
    Detection, transport, caching and the UI are all vendor-agnostic.
 
@@ -191,10 +194,42 @@ the optional backend key. It also:
 
 ### Answer application
 
-`interaction.ts` uses ordinary DOM APIs only: `click()` on the real control, and
-the native value setter plus bubbling `input`/`change` events for text fields so
-React's own listeners see the change. There is no OS-level input simulation.
-If no option matches confidently, it reports `no-match` rather than guessing.
+`interaction.ts` uses ordinary DOM APIs only: `click()` on the real control, the
+pointer and mouse events a click is made of, and the native value setter plus
+bubbling `input`/`change` events for text fields so React's own listeners see
+the change. There is no OS-level input simulation. If no option matches
+confidently, it reports `no-match` rather than guessing.
+
+Every selection is **verified**. Component libraries often hide the real input
+and listen on a wrapper (or on `mousedown`), or have no input at all and keep
+their state in `aria-checked`. When a click does not take, it is retried the
+way a user would click — on the topmost element at the centre of the visible
+option row, then on its label, then (for ARIA widgets) with Space — each given
+a moment to show its effect so a checkbox is never toggled twice. A link or
+button inside the row is never clicked. If nothing takes, the outcome is
+`not-applied`, and that question is not retried on every rescan.
+
+### Hard-to-reach options
+
+| Shape | How it is handled |
+|---|---|
+| Unnamed inputs, each buried in its own wrapper component | Grouped by structure: each joins the nearest ancestor holding another option of its kind; options split into columns are rejoined |
+| Checkboxes that each carry their own `name` | Same structural grouping |
+| `role="radio"` / `role="checkbox"` widgets with no input (Google Forms, Radix, Ionic) | Detected, labelled from `aria-label` / `aria-labelledby` / `<label for>` / own text, state read from `aria-checked` |
+| Inputs inside open shadow roots (web components) | Found through every open shadow root; grouping, labels and the prompt search cross the boundary; new shadow roots are observed too |
+| Option text in a sibling component rather than a `<label>` | Read from the option's whole row |
+| Prompt many wrappers above the options | The climb continues up to 12 levels for option groups, but never into another question's options |
+| Questions in same-origin iframes | The content script runs in every frame of an enabled site |
+
+Closed shadow roots are out of reach by design.
+
+### Several correct answers
+
+A checkbox group is sent with `multiSelect: true` (as is a text-only question
+whose prompt says "select all that apply"). The model is asked for every
+correct option in an `answers` list; the backend aligns each entry to an
+option, and the content script ticks each one. Boxes are only ever ticked,
+never unticked — the group may hold the user's own choices.
 
 ---
 
@@ -322,6 +357,7 @@ Express
       ├── POST /questions/answer   → QuestionService → ProviderFactory → AIProvider
       │                                   ↘ AnswerStore (memory | MongoDB)
       │                                   ↘ HistoryStore (off | MongoDB)
+      ├── POST /providers/test     → one fixed question, no cache, no history
       ├── POST /cache/clear
       ├── GET  /history, GET /stats
       └── POST /history/clear
@@ -376,12 +412,45 @@ switching provider changes who answers, not what was asked.
 | Provider | Id | How output is constrained | Default model |
 |---|---|---|---|
 | OpenAI | `openai` | Chat Completions with a strict `json_schema` | `gpt-4o-mini` |
-| Google Gemini | `gemini` | `responseMimeType` + JSON schema | `gemini-2.0-flash` |
+| Google Gemini | `gemini` | `responseMimeType` + JSON schema | `gemini-3.5-flash` |
 | Anthropic Claude | `anthropic` | Structured outputs (`messages.parse`) validated against the shared Zod schema | `claude-opus-5` |
 | OpenAI-compatible | `openai-compatible` | JSON object mode, schema restated in the prompt, lenient parse as a fallback | from `AI_MODEL` |
 
 Defaults are a starting point, not a recommendation — set `AI_MODEL`, or send
-`model` with a request, to use anything else.
+`model` with a request, to use anything else. `AI_MODEL` applies to
+`AI_PROVIDER` only (and to the server's own OpenAI-compatible endpoint), so
+switching provider in the extension never sends one vendor's model name to
+another.
+
+### Choosing a provider from the extension
+
+**Settings → AI provider** picks the provider and model, and optionally takes
+**your own API key** (plus the base URL, for an OpenAI-compatible endpoint
+such as OpenRouter, Ollama or LM Studio). **Test provider** sends one small
+question through the backend with the settings as they are on screen, saved
+or not, and shows the model's answer and latency — or the provider's error.
+
+| Leave the key blank | Enter a key |
+|---|---|
+| The backend's key from `server/.env` is used | Your key is used for your requests, in place of the backend's |
+
+How the key is handled:
+
+- Stored in `chrome.storage.local` on this device only — never synced through
+  the browser profile like the other settings — and never handed to a content
+  script (both keys are blanked out of anything a page-side script receives).
+- Sent only to your backend, as the `x-ai-api-key` header (`x-ai-base-url` for
+  an OpenAI-compatible endpoint), never in the request body.
+- The backend uses it to build that request's adapter and nothing else: it is
+  not cached, not written to history, and pino redacts the header.
+- With "Use the backend's configured provider" selected, no key is sent.
+- A key for an OpenAI-compatible endpoint is only ever sent to the base URL
+  that came with it, never to the server's own `AI_BASE_URL`.
+
+A backend operator who does not want this sets `ALLOW_CLIENT_AI_KEYS=false`:
+requests carrying a key are then refused with a clear message, and the
+settings page warns about it. On a hosted backend, keep `API_ACCESS_KEY` set —
+a user-supplied OpenAI-compatible base URL makes the server call that URL.
 
 The Claude adapter checks `stop_reason` before reading content, so a safety
 refusal (which arrives as HTTP 200) becomes a clear error rather than a parse
@@ -441,6 +510,8 @@ ANTHROPIC_API_KEY=
 AI_BASE_URL=                # any OpenAI-compatible endpoint
 AI_API_KEY=
 
+ALLOW_CLIENT_AI_KEYS=true   # use a key entered in the extension's settings
+
 PORT=3000
 ```
 
@@ -448,12 +519,26 @@ The full list — CORS origins, rate limits, timeouts, body size, cache settings
 the `API_ACCESS_KEY` shared secret and the MongoDB settings — is
 documented inline in `server/.env.example`.
 
-**API keys stay on the backend.** They are never bundled into the extension,
-never sent to the page, never returned by `/api/health` and never logged.
+**The backend's API keys stay on the backend.** They are never bundled into the
+extension, never sent to the page, never returned by `/api/health` and never
+logged. A user can still bring their own key from the extension's settings —
+see [Choosing a provider from the extension](#choosing-a-provider-from-the-extension).
 
 ---
 
 ## Local development
+
+### One click (Windows)
+
+Double-click **`Start Quiz Assistant.bat`**. The first run checks for
+Node.js 20+, installs dependencies, builds the backend and the extension,
+creates `server/.env` from the example, copies the `extension\dist` path to
+the clipboard and opens Chrome's extensions page for **Load unpacked**. Every
+run then starts the backend in that window — keep it open, close it to stop.
+Run `"Start Quiz Assistant.bat" rebuild` after changing or updating the code.
+No key is needed in `server/.env`: enter one in the extension's settings.
+
+### By hand
 
 ```bash
 npm install          # installs both workspaces
@@ -537,7 +622,9 @@ It contains seven questions in deliberately different DOM shapes, plus:
 ### `POST /api/questions/answer`
 
 Headers: `Content-Type: application/json`, plus `x-api-key` when
-`API_ACCESS_KEY` is configured.
+`API_ACCESS_KEY` is configured. Optionally `x-ai-api-key` — the caller's own
+provider key, used for this request in place of the server's — and, with
+`provider: "openai-compatible"`, `x-ai-base-url` (a `model` is then required).
 
 ```json
 {
@@ -546,13 +633,17 @@ Headers: `Content-Type: application/json`, plus `x-api-key` when
   "options": ["O(n)", "O(log n)", "O(n²)", "O(1)"],
   "context": "optional supporting code, maths or passage",
   "source": { "url": "https://example.com/quiz", "title": "Practice quiz" },
+  "multiSelect": false,
   "provider": "anthropic",
   "model": "claude-opus-5"
 }
 ```
 
 Only `question` is required. `type` defaults to `unknown`; `provider` and
-`model` override the server defaults for that one request.
+`model` override the server defaults for that one request. `multiSelect: true`
+says more than one option may be correct; the answer then carries
+`"answers": ["…", "…"]` (each an option's exact text) and `answer` is the same
+list joined with `"; "`.
 
 ```json
 {
@@ -580,9 +671,21 @@ none returns, raw chain-of-thought.
   "activeProvider": "openai",
   "providers": ["openai"],
   "allProviders": [{ "id": "openai", "label": "OpenAI", "configured": true, "defaultModel": "gpt-4o-mini" }],
+  "clientCredentials": true,
   "persistence": { "database": "connected", "cache": "mongodb", "history": true }
 }
 ```
+
+`clientCredentials` says whether a key sent from the extension will be used
+(`ALLOW_CLIENT_AI_KEYS`).
+
+### `POST /api/providers/test`
+
+Body `{ "provider"?: "...", "model"?: "..." }`, with the same optional
+`x-ai-api-key` / `x-ai-base-url` headers. Asks that provider one fixed
+question, bypassing cache, retries and history, and returns
+`{ "data": { "provider", "model", "answer", "latencyMs" } }` — or the provider's
+error with its usual status. The settings page's **Test provider** button.
 
 ### `POST /api/cache/clear`
 
@@ -673,8 +776,10 @@ Implemented:
 - Shared-secret authentication, compared in constant time — optional in
   development, required when `NODE_ENV=production` (the server will not start
   without it).
-- API keys server-side only; never in the extension bundle, never logged —
-  pino redacts `authorization`, `x-api-key` and `cookie`.
+- Server keys stay server-side; never in the extension bundle, never logged —
+  pino redacts `authorization`, `x-api-key`, `x-ai-api-key` and `cookie`.
+  A user's own key lives in the extension's local storage, is never given to a
+  content script, and is used by the backend for that request only.
 - No `eval`, no `new Function`, no remote code, no page-supplied JavaScript
   executed, no CSP relaxation. The extension declares its own restrictive CSP.
 - Messages from content scripts are re-validated in the service worker, and
@@ -708,7 +813,8 @@ What is transmitted, and nothing else:
 | `source` | Page URL and title |
 
 The full page is never sent. Navigation, adverts and footers are excluded
-before extraction. Settings live in `chrome.storage.sync`.
+before extraction. Settings live in `chrome.storage.sync`, except your own
+provider key, which stays in this device's `chrome.storage.local`.
 
 **What the backend stores depends on `MONGODB_URI`.** Without it, nothing is
 written anywhere: the answer cache is in memory and expires. With it, cached

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createAnswerCache } from '../src/background/cache';
-import { sanitize } from '../src/background/settings';
-import { BackendError, checkHealth, requestAnswer } from '../src/background/backend-client';
+import { forContentScript, sanitize } from '../src/background/settings';
+import { BackendError, checkHealth, requestAnswer, testProvider } from '../src/background/backend-client';
 import { DEFAULT_SETTINGS } from '../src/shared/constants';
 import type { ExtensionSettings, QuestionAnswer } from '../src/shared/types';
 
@@ -206,5 +206,99 @@ describe('backend client', () => {
     );
 
     await expect(checkHealth(SETTINGS)).resolves.toMatchObject({ activeProvider: 'openai' });
+  });
+});
+
+describe("the user's own provider key", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function captureHeaders(): Array<Record<string, string>> {
+    const headers: Array<Record<string, string>> = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((_url: string, init?: RequestInit) => {
+        headers.push((init?.headers ?? {}) as Record<string, string>);
+        return Promise.resolve(jsonResponse({ data: ANSWER }));
+      }),
+    );
+    return headers;
+  }
+
+  it('travels as a header, never in the body', async () => {
+    const bodies: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((_url: string, init?: RequestInit) => {
+        bodies.push(String(init?.body));
+        return Promise.resolve(jsonResponse({ data: ANSWER }));
+      }),
+    );
+    await requestAnswer(QUESTION, { ...SETTINGS, provider: 'gemini', aiApiKey: 'g-user-key' });
+    expect(bodies[0]).not.toContain('g-user-key');
+  });
+
+  it('is sent with the provider it was entered for', async () => {
+    const headers = captureHeaders();
+    await requestAnswer(QUESTION, { ...SETTINGS, provider: 'gemini', aiApiKey: 'g-user-key' });
+    expect(headers[0]?.['x-ai-api-key']).toBe('g-user-key');
+    expect(headers[0]?.['x-ai-base-url']).toBeUndefined();
+  });
+
+  it("is not sent while the backend's own provider is selected", async () => {
+    const headers = captureHeaders();
+    await requestAnswer(QUESTION, { ...SETTINGS, provider: '', aiApiKey: 'stale-key' });
+    expect(headers[0]?.['x-ai-api-key']).toBeUndefined();
+  });
+
+  it('brings its endpoint along for an OpenAI-compatible provider', async () => {
+    const headers = captureHeaders();
+    await requestAnswer(QUESTION, {
+      ...SETTINGS,
+      provider: 'openai-compatible',
+      model: 'llama',
+      aiApiKey: 'k',
+      aiBaseUrl: 'https://openrouter.ai/api/v1',
+    });
+    expect(headers[0]).toMatchObject({ 'x-ai-api-key': 'k', 'x-ai-base-url': 'https://openrouter.ai/api/v1' });
+  });
+
+  it('can be tried against the backend before it is saved', async () => {
+    const calls: Array<{ url: string; headers: Record<string, string>; body: unknown }> = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string, init?: RequestInit) => {
+        calls.push({ url, headers: init?.headers as Record<string, string>, body: JSON.parse(String(init?.body)) });
+        return Promise.resolve(
+          jsonResponse({ data: { provider: 'anthropic', model: 'claude-opus-5', answer: '4', latencyMs: 900 } }),
+        );
+      }),
+    );
+
+    const result = await testProvider({ ...SETTINGS, provider: 'anthropic', aiApiKey: 'sk-ant' });
+    expect(result).toMatchObject({ provider: 'anthropic', answer: '4' });
+    expect(calls[0]).toMatchObject({
+      url: 'http://localhost:3000/api/providers/test',
+      headers: { 'x-ai-api-key': 'sk-ant' },
+      body: { provider: 'anthropic' },
+    });
+  });
+});
+
+describe('provider settings sanitisation', () => {
+  it('keeps a key and an http(s) endpoint, and drops anything else', () => {
+    const settings = sanitize({ aiApiKey: '  sk-abc  ', aiBaseUrl: 'https://example.test/v1/' });
+    expect(settings.aiApiKey).toBe('sk-abc');
+    expect(settings.aiBaseUrl).toBe('https://example.test/v1');
+    expect(sanitize({ aiBaseUrl: 'javascript:alert(1)' }).aiBaseUrl).toBe('');
+    expect(sanitize({ aiApiKey: 42 }).aiApiKey).toBe('');
+  });
+
+  it('hides both keys from content scripts', () => {
+    const settings = forContentScript({ ...SETTINGS, aiApiKey: 'sk-user', backendApiKey: 'shared' });
+    expect(settings.aiApiKey).toBe('');
+    expect(settings.backendApiKey).toBe('');
+    expect(settings.autoFill).toBe(SETTINGS.autoFill);
   });
 });

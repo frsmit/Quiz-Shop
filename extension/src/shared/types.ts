@@ -24,11 +24,15 @@ export interface QuestionRequest {
   options?: string[];
   context?: string;
   source?: QuestionSource;
+  /** More than one option may be correct: the page offers checkboxes. */
+  multiSelect?: boolean;
 }
 
 /** The structured answer the backend guarantees, whichever provider ran. */
 export interface QuestionAnswer {
   answer: string;
+  /** Every option to select; present for multi-select questions only. */
+  answers?: string[];
   explanation: string;
   confidence?: number;
   reasoningSummary?: string;
@@ -50,6 +54,14 @@ export interface ExtensionSettings {
   provider: ProviderChoice;
   /** Optional model override; empty means "use the backend default". */
   model: string;
+  /**
+   * The user's own key for `provider`. Empty means the backend's key is used.
+   * Kept in `chrome.storage.local` (never synced) and never handed to a
+   * content script; the backend uses it per request and does not store it.
+   */
+  aiApiKey: string;
+  /** Base URL of an OpenAI-compatible endpoint, used with `aiApiKey`. */
+  aiBaseUrl: string;
   /** Base URL of the Express backend, without a trailing slash. */
   backendUrl: string;
   /** Optional shared secret, sent as `x-api-key` when the backend requires it. */
@@ -92,6 +104,13 @@ export interface DetectedQuestion {
   request: QuestionRequest;
   /** The element that owns the question, used to locate answer controls. */
   container: HTMLElement;
+  /**
+   * The option controls found while detecting it - native radios and
+   * checkboxes, or ARIA `role="radio"`/`"checkbox"` widgets - in option
+   * order. Filling uses these directly, so a control inside a shadow root or
+   * a deeply nested component is still reachable.
+   */
+  controls?: Element[];
 }
 
 /**
@@ -124,6 +143,8 @@ export type ActivityOutcome =
   | 'filled'
   | 'no-match'
   | 'no-control'
+  /** Clicked, but the page did not take the selection. */
+  | 'not-applied'
   | 'skipped'
   | 'error';
 
@@ -209,4 +230,22 @@ export interface ServerPersistence {
   database: 'connected' | 'unreachable' | 'not_configured';
   cache: 'mongodb' | 'memory' | 'off';
   history: boolean;
+}
+
+/** One provider as `/api/health` describes it. */
+export interface ProviderInfo {
+  id: ProviderId;
+  label: string;
+  /** The backend holds a key for it. */
+  configured: boolean;
+  /** The model used when the settings name none. */
+  defaultModel: string;
+}
+
+/** What `/api/providers/test` reports for a working provider. */
+export interface ProviderTestResult {
+  provider: string;
+  model: string;
+  answer: string;
+  latencyMs: number;
 }

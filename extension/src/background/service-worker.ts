@@ -2,9 +2,10 @@
  * MV3 service worker: the extension's orchestrator.
  *
  * Content scripts share an origin with untrusted page code, so the worker owns
- * everything sensitive - settings, the backend URL, the optional backend key -
- * and validates every inbound message before acting on it. Content scripts
- * receive answers, never configuration they did not ask for.
+ * everything sensitive - settings, the backend URL, the optional backend key,
+ * the user's own provider key - and validates every inbound message before
+ * acting on it. Content scripts receive answers and the behaviour switches,
+ * never a key.
  *
  * It also owns the things that must be global rather than per-tab: the pause
  * state, the start delay, the pacing between answers, and the activity log.
@@ -26,10 +27,11 @@ import {
   fetchHistory,
   fetchServerStats,
   requestAnswer,
+  testProvider,
 } from './backend-client';
 import { createAnswerCache } from './cache';
 import { createPacer } from './pacer';
-import { readSettings, sanitize, writeSettings } from './settings';
+import { forContentScript, readSettings, sanitize, writeSettings } from './settings';
 import { ensureResumedAt, pause, readRunState, readiness, resume } from './run-state';
 import * as activityLog from './activity-log';
 
@@ -53,6 +55,7 @@ const OUTCOMES: readonly ActivityOutcome[] = [
   'filled',
   'no-match',
   'no-control',
+  'not-applied',
   'skipped',
   'error',
 ];
@@ -93,7 +96,8 @@ async function handle(
   const trusted = isExtensionPage(sender);
 
   if (hasKind(payload, 'settings:get')) {
-    return { ok: true, kind: 'settings', settings: await readSettings() };
+    const settings = await readSettings();
+    return { ok: true, kind: 'settings', settings: trusted ? settings : forContentScript(settings) };
   }
 
   if (hasKind(payload, 'question:detected')) return answerQuestion(payload);
@@ -176,6 +180,16 @@ async function handle(
     return { ok: true, kind: 'settings', settings: updated };
   }
 
+  if (hasKind(payload, 'provider:test')) {
+    // The settings being edited, which need not be saved yet: trying a key
+    // before committing to it is the point.
+    try {
+      return { ok: true, kind: 'provider-test', result: await testProvider(sanitize(payload.settings)) };
+    } catch (error) {
+      return toFailure(error);
+    }
+  }
+
   if (hasKind(payload, 'backend:health')) {
     const settings = await readSettings();
     try {
@@ -185,6 +199,10 @@ async function handle(
         kind: 'health',
         providers: health.providers ?? [],
         activeProvider: health.activeProvider || settings.provider || 'unknown',
+        ...(Array.isArray(health.allProviders) ? { allProviders: health.allProviders } : {}),
+        ...(typeof health.clientCredentials === 'boolean'
+          ? { clientCredentials: health.clientCredentials }
+          : {}),
         ...(health.persistence ? { persistence: health.persistence } : {}),
       };
     } catch (error) {
@@ -446,7 +464,7 @@ async function syncDynamicContentScripts(preloaded?: ExtensionSettings): Promise
     js: ['content.js'],
     matches,
     runAt: 'document_idle',
-    allFrames: false,
+    allFrames: true,
   };
 
   if (existing) await chrome.scripting.updateContentScripts([script]);
@@ -482,7 +500,7 @@ async function broadcast(message: unknown): Promise<void> {
 }
 
 function broadcastSettings(settings: ExtensionSettings): Promise<void> {
-  return broadcast({ kind: 'settings:changed', settings });
+  return broadcast({ kind: 'settings:changed', settings: forContentScript(settings) });
 }
 
 function broadcastRun(status: RuntimeStatus): Promise<void> {

@@ -1,12 +1,8 @@
-import {
-  ANSWER_DELAY_PRESETS,
-  LOG_LIMIT_BOUNDS,
-  PROVIDER_CHOICES,
-  START_DELAY_PRESETS,
-} from '../../shared/constants';
-import type { ExtensionSettings, ProviderChoice } from '../../shared/types';
+import { ANSWER_DELAY_PRESETS, LOG_LIMIT_BOUNDS, START_DELAY_PRESETS } from '../../shared/constants';
+import type { ExtensionSettings } from '../../shared/types';
 import { Field, Toggle } from '../components/Field';
 import { DelayPicker } from '../components/DelayPicker';
+import { ProviderSettings } from '../components/ProviderSettings';
 
 interface SettingsTabProps {
   settings: ExtensionSettings;
@@ -16,42 +12,7 @@ interface SettingsTabProps {
 export function SettingsTab({ settings, update }: SettingsTabProps) {
   return (
     <div className="stack">
-      <section className="card">
-        <div className="card-head">
-          <h2>AI provider</h2>
-        </div>
-
-        <div className="row">
-          <Field label="Provider" htmlFor="provider">
-            <select
-              id="provider"
-              value={settings.provider}
-              onChange={(event) => update('provider', event.target.value as ProviderChoice)}
-            >
-              {PROVIDER_CHOICES.map((choice) => (
-                <option key={choice.value || 'default'} value={choice.value}>
-                  {choice.label}
-                </option>
-              ))}
-            </select>
-          </Field>
-
-          <Field label="Model" htmlFor="model" hint="Leave blank to use the backend default.">
-            <input
-              id="model"
-              type="text"
-              value={settings.model}
-              placeholder="backend default"
-              onChange={(event) => update('model', event.target.value)}
-            />
-          </Field>
-        </div>
-
-        <p className="notice">
-          <strong>API keys live on the backend.</strong> They are never stored in the extension or
-          sent to the page. Configure them in <code>server/.env</code>.
-        </p>
-      </section>
+      <ProviderSettings settings={settings} update={update} />
 
       <section className="card">
         <div className="card-head">

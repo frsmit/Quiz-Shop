@@ -39,6 +39,8 @@ export function healthHandler(
         configured,
         defaultModel,
       })),
+      // Whether a key entered in the extension's settings will be used.
+      clientCredentials: factory.acceptsClientKeys(),
       persistence: { database, cache: persistence.cache, history: persistence.history },
     });
   };

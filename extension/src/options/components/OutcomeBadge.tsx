@@ -13,6 +13,7 @@ const STYLE: Record<ActivityOutcome, { variant: string; glyph: string; label: st
   filled: { variant: 'solid', glyph: '✓', label: 'filled' },
   'no-match': { variant: 'dashed', glyph: '?', label: 'no match' },
   'no-control': { variant: 'faint', glyph: '–', label: 'nothing to fill' },
+  'not-applied': { variant: 'dashed', glyph: '×', label: 'not applied' },
   skipped: { variant: 'faint', glyph: '–', label: 'skipped' },
   error: { variant: 'strong', glyph: '!', label: 'error' },
 };

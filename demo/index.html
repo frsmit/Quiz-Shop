@@ -121,6 +121,46 @@ console.log(doubled.join('-'));</code></pre>
         </ol>
       </section>
 
+      <!-- 8. More than one correct answer: checkboxes, each with its own name. -->
+      <section class="question" id="q-multi">
+        <h2>Question 8</h2>
+        <p class="prompt">Which of these are HTTP request methods? Select all that apply.</p>
+        <div class="options">
+          <label><input type="checkbox" name="q8-get" /> GET</label>
+          <label><input type="checkbox" name="q8-fetch" /> FETCH</label>
+          <label><input type="checkbox" name="q8-post" /> POST</label>
+          <label><input type="checkbox" name="q8-delete" /> DELETE</label>
+        </div>
+      </section>
+
+      <!--
+        9. A component-library radio group: unnamed inputs hidden inside layers
+        of wrappers, option text in a separate component, and selection done by
+        the row's own handler (quiz.js) - the input's own click is ignored.
+      -->
+      <section class="question" id="q-component">
+        <h2>Question 9</h2>
+        <div class="card-header"><div class="card-title"><span class="prompt">Which CSS property controls the space inside an element's border?</span></div></div>
+        <div class="card-body"><div class="choice-list" data-choice-list>
+          <div class="choice-row"><div class="choice-control"><span class="choice-ripple"><input type="radio" class="visually-hidden" tabindex="-1" /><span class="choice-dot"></span></span></div><div class="choice-text"><p><span>margin</span></p></div></div>
+          <div class="choice-row"><div class="choice-control"><span class="choice-ripple"><input type="radio" class="visually-hidden" tabindex="-1" /><span class="choice-dot"></span></span></div><div class="choice-text"><p><span>padding</span></p></div></div>
+          <div class="choice-row"><div class="choice-control"><span class="choice-ripple"><input type="radio" class="visually-hidden" tabindex="-1" /><span class="choice-dot"></span></span></div><div class="choice-text"><p><span>border-spacing</span></p></div></div>
+          <div class="choice-row"><div class="choice-control"><span class="choice-ripple"><input type="radio" class="visually-hidden" tabindex="-1" /><span class="choice-dot"></span></span></div><div class="choice-text"><p><span>outline</span></p></div></div>
+        </div></div>
+      </section>
+
+      <!-- 10. ARIA widgets with no input at all, as Google Forms renders them. -->
+      <section class="question" id="q-aria">
+        <h2>Question 10</h2>
+        <p class="prompt" id="q10-prompt">Which of these is a JavaScript primitive type?</p>
+        <div role="radiogroup" aria-labelledby="q10-prompt" class="aria-options" data-aria-group>
+          <div role="radio" aria-checked="false" tabindex="0" class="aria-option">Array</div>
+          <div role="radio" aria-checked="false" tabindex="-1" class="aria-option">Symbol</div>
+          <div role="radio" aria-checked="false" tabindex="-1" class="aria-option">Map</div>
+          <div role="radio" aria-checked="false" tabindex="-1" class="aria-option">Date</div>
+        </div>
+      </section>
+
       <div id="dynamic-questions"></div>
 
       <div class="controls">

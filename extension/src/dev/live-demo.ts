@@ -20,6 +20,12 @@ interface HarnessOptions {
   maxContextLength?: number;
   /** Shared secret, when the backend sets API_ACCESS_KEY. */
   apiKey?: string;
+  /** Provider and model, as the settings page would pick them. */
+  provider?: string;
+  model?: string;
+  /** Your own provider key (and endpoint), as entered in the settings page. */
+  aiApiKey?: string;
+  aiBaseUrl?: string;
 }
 
 interface HarnessResult {
@@ -54,11 +60,17 @@ async function run(options: HarnessOptions = {}): Promise<HarnessResult[]> {
     try {
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
       if (options.apiKey) headers['x-api-key'] = options.apiKey;
+      if (options.aiApiKey) headers['x-ai-api-key'] = options.aiApiKey;
+      if (options.aiBaseUrl) headers['x-ai-base-url'] = options.aiBaseUrl;
 
       const response = await fetch(`${backendUrl}/api/questions/answer`, {
         method: 'POST',
         headers,
-        body: JSON.stringify(question.request),
+        body: JSON.stringify({
+          ...question.request,
+          ...(options.provider ? { provider: options.provider } : {}),
+          ...(options.model ? { model: options.model } : {}),
+        }),
       });
 
       const payload = (await response.json()) as {
@@ -70,7 +82,7 @@ async function run(options: HarnessOptions = {}): Promise<HarnessResult[]> {
         result.error = payload.error?.message ?? `HTTP ${response.status}`;
       } else {
         result.answer = payload.data.answer;
-        if (fill) result.filled = applyAnswer(question.container, payload.data);
+        if (fill) result.filled = await applyAnswer(question.container, payload.data, question.controls);
       }
     } catch (error) {
       result.error = error instanceof Error ? error.message : String(error);

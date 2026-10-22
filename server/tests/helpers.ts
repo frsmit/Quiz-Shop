@@ -6,7 +6,7 @@ import type { Express } from 'express';
 import { createApp } from '../src/app.js';
 import { loadEnv } from '../src/config/env.js';
 import type { Env } from '../src/config/env.js';
-import type { AIProvider } from '../src/providers/ai-provider.interface.js';
+import type { AIProvider, ClientCredentials } from '../src/providers/ai-provider.interface.js';
 import type { ProviderDescriptor, ProviderRegistry } from '../src/providers/provider.factory.js';
 import type { ProviderId, QuestionAnswer, QuestionRequest } from '../src/question/question.schema.js';
 
@@ -55,15 +55,15 @@ export class StubProvider implements AIProvider {
 }
 
 export class StubRegistry implements ProviderRegistry {
-  createCalls: Array<{ id?: ProviderId; model?: string }> = [];
+  createCalls: Array<{ id?: ProviderId; model?: string; credentials?: ClientCredentials }> = [];
 
   constructor(
     private readonly provider: AIProvider = new StubProvider(),
     private readonly onCreate?: (id?: ProviderId, model?: string) => void,
   ) {}
 
-  create(id?: ProviderId, model?: string): AIProvider {
-    this.createCalls.push({ id, model });
+  create(id?: ProviderId, model?: string, credentials?: ClientCredentials): AIProvider {
+    this.createCalls.push({ id, model, ...(credentials ? { credentials } : {}) });
     this.onCreate?.(id, model);
     return this.provider;
   }
@@ -88,6 +88,10 @@ export class StubRegistry implements ProviderRegistry {
 
   activeProvider(): ProviderId {
     return 'openai';
+  }
+
+  acceptsClientKeys(): boolean {
+    return true;
   }
 }
 

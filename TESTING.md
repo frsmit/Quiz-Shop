@@ -167,6 +167,12 @@ Reload <http://localhost:5173>.
       thinking, it is proving the wiring
 - [ ] The `<select>` in Q5 changes to `HAVING`
 - [ ] The textarea in Q4 gets text typed into it
+- [ ] Q8 (select all that apply) gets **two** boxes ticked — the fake endpoint
+      picks the second and third options, `FETCH` and `POST`
+- [ ] Q9 (a component whose hidden input ignores clicks) shows `padding`
+      highlighted — the row was clicked the way a user would click it
+- [ ] Q10 (ARIA radios, no inputs) shows `Symbol` in bold
+- [ ] In **Activity log**, none of these shows `not applied`
 
 ### 3c. Dynamic questions
 
@@ -286,6 +292,25 @@ AI_PROVIDER=gemini       # and GEMINI_API_KEY=...
 In Options, change the provider dropdown and save. If that provider has
 credentials on the backend, the next question goes to it — no restart, no code
 change. That is the provider abstraction doing its job.
+
+### Bring your own key from the extension
+
+With the backend's own key removed (or for a provider it has no key for):
+
+- [ ] **Settings → AI provider**: pick the provider; the key field says
+      "Required: the backend has no key for this provider" and the model
+      field's placeholder shows the backend's default
+- [ ] Paste your key and click **Test provider** before saving — expect
+      "<provider> · <model> answered "4" in …s"
+- [ ] A wrong key shows the provider's own error message instead
+- [ ] Save, reload the demo page: answers arrive from your account
+- [ ] The backend log shows `ownKey: true` and `x-ai-api-key: "[redacted]"`;
+      the key itself appears nowhere in it
+- [ ] For an OpenAI-compatible endpoint the base URL and model are required;
+      with the fake AI: base URL `http://127.0.0.1:4999/v1`, model
+      `fake-model`, any key
+- [ ] Set `ALLOW_CLIENT_AI_KEYS=false` and restart: the settings page warns the
+      key will be refused, and questions fail with that message
 
 ---
 

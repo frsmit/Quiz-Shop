@@ -15,7 +15,9 @@ async function main(): Promise<void> {
   const configured = factory.configured();
   if (configured.length === 0) {
     log.warn(
-      'No AI provider credentials found. Requests will fail until one is configured in .env - see .env.example.',
+      env.ALLOW_CLIENT_AI_KEYS
+        ? 'No AI provider key in .env. Enter your own key in the extension (Settings > AI provider), or add one to .env - see .env.example.'
+        : 'No AI provider credentials found. Requests will fail until one is configured in .env - see .env.example.',
     );
   } else if (!configured.includes(env.AI_PROVIDER)) {
     log.warn(

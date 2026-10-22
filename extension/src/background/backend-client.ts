@@ -1,12 +1,15 @@
 /**
  * The extension's only outbound network surface: the Express backend.
  *
- * Provider credentials never reach the browser, so this client speaks to our
- * own API and nothing else. Failures are mapped onto a small set of codes the
- * content script and options page can act on.
+ * It speaks to our own API and nothing else - not even when the user has
+ * entered their own provider key: the key travels to the backend in a header,
+ * and the backend makes the provider call. Failures are mapped onto a small
+ * set of codes the content script and options page can act on.
  */
 import type {
   ExtensionSettings,
+  ProviderInfo,
+  ProviderTestResult,
   QuestionAnswer,
   QuestionRequest,
   ServerHistoryEntry,
@@ -32,6 +35,10 @@ export interface HealthResponse {
   status: string;
   activeProvider: string;
   providers: string[];
+  /** Every provider the backend knows, with its default model. */
+  allProviders?: ProviderInfo[];
+  /** Whether the backend uses a key entered in the extension. */
+  clientCredentials?: boolean;
   persistence?: ServerPersistence;
 }
 
@@ -57,12 +64,47 @@ export async function requestAnswer(
     '/api/questions/answer',
     { method: 'POST', body: JSON.stringify(body) },
     settings,
+    providerHeaders(settings),
   );
 
   if (!payload.data || typeof payload.data.answer !== 'string') {
     throw new BackendError('The backend returned a malformed answer.', 'provider_error');
   }
   return payload.data;
+}
+
+/**
+ * Ask the chosen provider one small question through the backend, so a key or
+ * model can be checked from the settings page before it is saved.
+ */
+export async function testProvider(settings: ExtensionSettings): Promise<ProviderTestResult> {
+  const body: Record<string, unknown> = {};
+  if (settings.provider) body.provider = settings.provider;
+  if (settings.model) body.model = settings.model;
+
+  const payload = await call<{ data?: ProviderTestResult }>(
+    '/api/providers/test',
+    { method: 'POST', body: JSON.stringify(body) },
+    settings,
+    providerHeaders(settings),
+  );
+  if (!payload.data || typeof payload.data.provider !== 'string') {
+    throw new BackendError('The backend returned a malformed test result.', 'provider_error');
+  }
+  return payload.data;
+}
+
+/**
+ * The user's own key, for the provider they picked. With "use the backend's
+ * provider" selected the backend's own key applies, so nothing is sent.
+ */
+function providerHeaders(settings: ExtensionSettings): Record<string, string> {
+  if (!settings.provider || !settings.aiApiKey) return {};
+  const headers: Record<string, string> = { 'x-ai-api-key': settings.aiApiKey };
+  if (settings.provider === 'openai-compatible' && settings.aiBaseUrl) {
+    headers['x-ai-base-url'] = settings.aiBaseUrl;
+  }
+  return headers;
 }
 
 export async function checkHealth(settings: ExtensionSettings): Promise<HealthResponse> {
@@ -116,11 +158,16 @@ export async function clearServerHistory(settings: ExtensionSettings): Promise<n
   return payload.data?.deleted ?? 0;
 }
 
-async function call<T>(path: string, init: RequestInit, settings: ExtensionSettings): Promise<T> {
+async function call<T>(
+  path: string,
+  init: RequestInit,
+  settings: ExtensionSettings,
+  extraHeaders: Record<string, string> = {},
+): Promise<T> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), settings.requestTimeoutMs);
 
-  const headers: Record<string, string> = { Accept: 'application/json' };
+  const headers: Record<string, string> = { Accept: 'application/json', ...extraHeaders };
   if (init.body) headers['Content-Type'] = 'application/json';
   if (settings.backendApiKey) headers['x-api-key'] = settings.backendApiKey;
 

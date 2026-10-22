@@ -20,6 +20,7 @@ const FILTERS: ReadonlyArray<{ value: Filter; label: string; server: boolean }> 
   { value: 'cached', label: 'Cached', server: true },
   // The server records answers it produced, never what happened on the page.
   { value: 'no-match', label: 'No match', server: false },
+  { value: 'not-applied', label: 'Not applied', server: false },
   { value: 'errors', label: 'Errors', server: false },
 ];
 

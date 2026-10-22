@@ -64,6 +64,48 @@ describe('POST /api/questions/answer', () => {
     expect(registry.createCalls).toEqual([{ id: 'anthropic', model: 'claude-opus-5' }]);
   });
 
+  it("passes the user's own key and endpoint to the factory, from headers only", async () => {
+    const registry = new StubRegistry();
+    await request(buildApp(registry))
+      .post('/api/questions/answer')
+      .set('x-ai-api-key', ' sk-user ')
+      .set('x-ai-base-url', 'https://mine.test/v1')
+      .send({ ...VALID_QUESTION, provider: 'openai-compatible', model: 'm', apiKey: 'ignored' })
+      .expect(200);
+
+    expect(registry.createCalls).toEqual([
+      {
+        id: 'openai-compatible',
+        model: 'm',
+        credentials: { apiKey: 'sk-user', baseUrl: 'https://mine.test/v1' },
+      },
+    ]);
+  });
+
+  it('carries the multi-select flag through to the provider and keeps the chosen list', async () => {
+    let seen: boolean | undefined;
+    const provider = new StubProvider({
+      respond: async (req) => {
+        seen = req.multiSelect;
+        return {
+          answer: 'O(n); O(1)',
+          answers: ['A. O(n)', 'O(1)'],
+          explanation: 'x',
+          provider: 'stub',
+          model: 'stub-model',
+        };
+      },
+    });
+    const response = await request(buildApp(new StubRegistry(provider)))
+      .post('/api/questions/answer')
+      .send({ ...VALID_QUESTION, multiSelect: true })
+      .expect(200);
+
+    expect(seen).toBe(true);
+    expect(response.body.data.answers).toEqual(['O(n)', 'O(1)']);
+    expect(response.body.data.answer).toBe('O(n); O(1)');
+  });
+
   it('rejects a request with no question', async () => {
     const response = await request(buildApp())
       .post('/api/questions/answer')
@@ -271,6 +313,45 @@ describe('access control', () => {
       .expect(200);
 
     expect(response.headers['access-control-allow-origin']).toBe('chrome-extension://abcdefghijklmnop');
+  });
+});
+
+describe('POST /api/providers/test', () => {
+  it('asks the chosen provider one question and reports how it went', async () => {
+    const registry = new StubRegistry();
+    const response = await request(buildApp(registry))
+      .post('/api/providers/test')
+      .set('x-ai-api-key', 'sk-user')
+      .send({ provider: 'gemini', model: 'gemini-x' })
+      .expect(200);
+
+    expect(registry.createCalls).toEqual([
+      { id: 'gemini', model: 'gemini-x', credentials: { apiKey: 'sk-user' } },
+    ]);
+    expect(response.body.data).toMatchObject({ provider: 'stub', model: 'stub-model', answer: '4' });
+    expect(typeof response.body.data.latencyMs).toBe('number');
+  });
+
+  it('reports a rejected key with the provider error status', async () => {
+    const provider = new StubProvider({
+      respond: async () => {
+        throw new ProviderError('authentication', 'stub', 'Incorrect API key provided.');
+      },
+    });
+    const response = await request(buildApp(new StubRegistry(provider)))
+      .post('/api/providers/test')
+      .send({})
+      .expect(502);
+
+    expect(response.body.error.message).toMatch(/Incorrect API key/);
+  });
+
+  it('never caches or records the probe', async () => {
+    const provider = new StubProvider();
+    const app = buildApp(new StubRegistry(provider), { CACHE_ENABLED: 'true' });
+    await request(app).post('/api/providers/test').send({}).expect(200);
+    await request(app).post('/api/providers/test').send({}).expect(200);
+    expect(provider.calls).toBe(2);
   });
 });
 
