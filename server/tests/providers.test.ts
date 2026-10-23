@@ -542,4 +542,56 @@ describe('GeminiProvider', () => {
       'gemini-2.5-pro',
     );
   });
+
+  it('normalises a hand-typed model name', () => {
+    expect(new GeminiProvider('k', { ...CONTEXT, model: ' Gemini-3.5 Flash ' }).getModel()).toBe(
+      'gemini-3.5-flash',
+    );
+    expect(new GeminiProvider('k', { ...CONTEXT, model: 'models/gemini-2.5-pro' }).getModel()).toBe(
+      'gemini-2.5-pro',
+    );
+  });
+
+  it('explains a model name Google rejects', async () => {
+    stubFetch(() =>
+      Promise.resolve(
+        jsonResponse(
+          {
+            error: {
+              code: 400,
+              message: '* GenerateContentRequest.model: unexpected model name format\n',
+              status: 'INVALID_ARGUMENT',
+            },
+          },
+          400,
+        ),
+      ),
+    );
+
+    const failure = new GeminiProvider('k', { ...CONTEXT, model: 'gemini 3.5', timeoutMs: 2_000 })
+      .answerQuestion(QUESTION);
+    await expect(failure).rejects.toMatchObject({ code: 'bad_request', provider: 'gemini' });
+    await expect(failure).rejects.toThrow('Gemini has no model named "gemini-3.5"');
+  });
+
+  it('explains a model that does not exist', async () => {
+    stubFetch(() =>
+      Promise.resolve(
+        jsonResponse(
+          {
+            error: {
+              code: 404,
+              message: 'models/gemini-3.5 is not found for API version v1beta.',
+              status: 'NOT_FOUND',
+            },
+          },
+          404,
+        ),
+      ),
+    );
+
+    await expect(
+      new GeminiProvider('k', { ...CONTEXT, model: 'Gemini-3.5', timeoutMs: 2_000 }).answerQuestion(QUESTION),
+    ).rejects.toThrow(/no model named "gemini-3\.5".*Google: models\/gemini-3\.5 is not found/);
+  });
 });

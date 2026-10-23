@@ -59,7 +59,7 @@ export class GeminiProvider implements AIProvider {
 
   constructor(apiKey: string, context: ProviderContext, options: GeminiOptions = {}) {
     this.client = new GoogleGenAI({ apiKey });
-    this.model = context.model?.trim() || GEMINI_DEFAULT_MODEL;
+    this.model = normaliseModel(context.model) || GEMINI_DEFAULT_MODEL;
     this.timeoutMs = context.timeoutMs;
     this.thinkingLevel = THINKING_LEVELS[options.thinkingLevel ?? 'low'];
   }
@@ -124,6 +124,16 @@ export class GeminiProvider implements AIProvider {
         { cause: error, retryAfterMs },
       );
     }
+    if (status !== undefined && isBadModel(status, error)) {
+      return new ProviderError(
+        codeForStatus(status),
+        this.getName(),
+        `Gemini has no model named "${this.model}". In Settings, enter a full model ID such as ` +
+          `${GEMINI_DEFAULT_MODEL}, or clear the Model field to use the default.` +
+          (status === 404 ? ` (Google: ${googleMessageOf(error)})` : ''),
+        { cause: error },
+      );
+    }
     if (status !== undefined) {
       return new ProviderError(
         codeForStatus(status),
@@ -137,4 +147,38 @@ export class GeminiProvider implements AIProvider {
       cause: error,
     });
   }
+}
+
+/**
+ * Gemini model IDs are lowercase and unprefixed in practice, but people type
+ * what they see in Google's marketing ("Gemini-3.5 Flash") or copy the REST
+ * form ("models/gemini-3.5-flash"). Google answers the first with a 400
+ * "unexpected model name format", so fold both into the canonical ID.
+ */
+export function normaliseModel(model: string | undefined): string {
+  return (model ?? '')
+    .trim()
+    .replace(/^models\//i, '')
+    .replace(/\s+/g, '-')
+    .toLowerCase();
+}
+
+/** A 400 about the model name's format, or a 404 for a model that does not exist. */
+function isBadModel(status: number, error: unknown): boolean {
+  const text = error instanceof Error ? error.message : '';
+  if (status === 400) return /model name format/i.test(text);
+  if (status === 404) return /models\/\S+ is not found/i.test(text);
+  return false;
+}
+
+/** The human sentence inside Google's JSON error body, when there is one. */
+function googleMessageOf(error: unknown): string {
+  const text = error instanceof Error ? error.message : '';
+  try {
+    const parsed = JSON.parse(text.slice(text.indexOf('{'))) as { error?: { message?: unknown } };
+    if (typeof parsed.error?.message === 'string') return parsed.error.message.trim();
+  } catch {
+    // Not JSON; fall through to the raw text.
+  }
+  return text;
 }

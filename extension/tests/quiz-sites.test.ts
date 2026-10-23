@@ -4,6 +4,7 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { detectQuestions } from '../src/content/detector';
+import { applyAnswer } from '../src/content/interaction';
 
 const detect = () => detectQuestions(document, { maxContextLength: 2000 }).map((q) => q.request);
 
@@ -108,5 +109,55 @@ describe('W3Schools: "Question 1 of 40:" numbering', () => {
     </form></main>`;
 
     expect(detect()[0]?.question).toBe('What does HTML stand for?');
+  });
+});
+
+describe('Moodle: screen-reader-only legend on the answer group', () => {
+  function render(): void {
+    // Bootstrap's recipe, plus the message drawer Moodle keeps in every page.
+    document.head.innerHTML = `<style>
+      .visually-hidden { position: absolute !important; width: 1px !important; height: 1px !important;
+        overflow: hidden !important; clip: rect(0, 0, 0, 0) !important; }
+      .drawer.hidden { display: none; }
+    </style>`;
+    document.body.innerHTML = `<div role="main"><section class="card"><div class="card-body">
+      <h2>Docker image fundamentals</h2>
+      <div class="practice-prompt">
+        <h3>Which component contains the instructions used to build a Docker image?</h3>
+        <fieldset class="ablock">
+          <legend class="visually-hidden">Choose a practice answer</legend>
+          <div class="answer">
+            <div class="r0"><label><input type="radio" name="a" value="1"><span><strong>a.</strong> Dockerfile</span></label></div>
+            <div class="r1"><label><input type="radio" name="a" value="2"><span><strong>b.</strong> package.json</span></label></div>
+            <div class="r0"><label><input type="radio" name="a" value="3"><span><strong>c.</strong> docker-compose.yml</span></label></div>
+          </div>
+        </fieldset>
+      </div>
+    </div></section></div>
+    <div class="drawer hidden"><fieldset>
+      <legend class="visually-hidden">Accept messages from:</legend>
+      <input type="radio" name="block" id="b1"><label for="b1">My contacts only</label>
+      <input type="radio" name="block" id="b0"><label for="b0">My contacts and anyone in my courses</label>
+    </fieldset></div>`;
+  }
+
+  it('takes the visible prompt rather than the hidden legend', () => {
+    render();
+    expect(detect()).toEqual([
+      {
+        question: 'Which component contains the instructions used to build a Docker image?',
+        type: 'multiple_choice',
+        options: ['Dockerfile', 'package.json', 'docker-compose.yml'],
+      },
+    ]);
+  });
+
+  it('selects the matching radio', async () => {
+    render();
+    const [question] = detectQuestions(document, { maxContextLength: 2000 });
+    expect(
+      await applyAnswer(question!.container, { answer: 'Dockerfile', explanation: 'x', provider: 'p', model: 'm' }, question!.controls),
+    ).toBe('filled');
+    expect(document.querySelector<HTMLInputElement>('input[name="a"]:checked')?.value).toBe('1');
   });
 });

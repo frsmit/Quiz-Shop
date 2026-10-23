@@ -129,17 +129,37 @@ export function isRendered(element: Element): boolean {
  * Opacity counts here, unlike in `isRendered`: quiz sites collapse the
  * "Answer & Solution" panel with `opacity: 0` (ExamVeda), and reading it would
  * hand the site's own answer to the model as part of the question.
+ *
+ * So does screen-reader-only text: Moodle and Bootstrap pages label each
+ * answer group with a `visually-hidden` legend ("Select one:"), which would
+ * otherwise stand in for the visible prompt above it.
  */
 function hiddenByStyle(element: Element): boolean {
   const view = element.ownerDocument.defaultView;
   if (!view) return false;
   try {
     const style = view.getComputedStyle(element);
-    return style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0';
+    return (
+      style.display === 'none' ||
+      style.visibility === 'hidden' ||
+      style.opacity === '0' ||
+      screenReaderOnly(style)
+    );
   } catch {
     // Some engines (jsdom) cannot compute styles for MathML; count it as shown.
     return false;
   }
+}
+
+/** The `sr-only` / `visually-hidden` recipe: taken out of flow and clipped to nothing. */
+function screenReaderOnly(style: CSSStyleDeclaration): boolean {
+  if (style.position !== 'absolute' && style.position !== 'fixed') return false;
+  const clipped =
+    /^rect\(\s*0(px)?[\s,]+0(px)?[\s,]+0(px)?[\s,]+0(px)?\s*\)$/.test(style.clip) ||
+    /^inset\(\s*50%\s*\)$/.test(style.clipPath);
+  const squeezed =
+    style.overflow === 'hidden' && parseFloat(style.width) <= 1 && parseFloat(style.height) <= 1;
+  return clipped || squeezed;
 }
 
 /** Visible text of a subtree, skipping furniture, hidden and excluded elements. */
